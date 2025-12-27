@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>TaskMaster Dashboard</title>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#4338ca",
+                        "background-light": "#f8fafc",
+                        "background-dark": "#0f172a",
+                        "surface-dark": "#1e293b",
+                        "surface-light": "#FFFFFF",
+                        "accent-blue": "#2563eb","accent-purple": "#7c3aed",},
+                    backgroundImage: {
+                        'gradient-primary': 'linear-gradient(135deg, #1d4ed8 0%, #7e22ce 100%)','gradient-hover': 'linear-gradient(135deg, #1e40af 0%, #6b21a8 100%)','gradient-light': 'linear-gradient(135deg, rgba(29, 78, 216, 0.15) 0%, rgba(126, 34, 206, 0.15) 100%)','gradient-text': 'linear-gradient(135deg, #1d4ed8 0%, #7e22ce 100%)',
+                    },
+                    fontFamily: {
+                        "display": ["Inter", "sans-serif"]
+                    },
+                    borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            font-size: 24px;
+        }
+        .material-symbols-outlined.fill {
+            font-variation-settings: 'FILL' 1;
+        }::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #475569; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #64748b; 
+        }
+        .text-gradient {
+            background: linear-gradient(135deg, #1d4ed8 0%, #7e22ce 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+    </style>
+</head>
+<body class="bg-background-light dark:bg-background-dark text-slate-900 dark:text-white font-display overflow-hidden">
+<div class="flex h-screen w-full overflow-hidden">
+<aside class="hidden w-64 flex-col border-r border-slate-200 dark:border-slate-800 bg-surface-light dark:bg-background-dark lg:flex">
+<div class="flex h-16 items-center gap-3 px-6 border-b border-slate-200 dark:border-slate-800">
+<div class="size-8 rounded bg-gradient-primary flex items-center justify-center text-white shadow-md shadow-blue-600/20">
+<span class="material-symbols-outlined" style="font-size: 20px;">check_circle</span>
+</div>
+<h1 class="text-lg font-bold tracking-tight bg-gradient-to-r from-blue-700 to-purple-700 dark:from-blue-500 dark:to-purple-500 bg-clip-text text-transparent">TaskMaster</h1>
+</div>
+<nav class="flex-1 overflow-y-auto px-4 py-6">
+<ul class="flex flex-col gap-2">
+<li>
+<a class="flex items-center gap-3 rounded-lg bg-gradient-primary shadow-lg shadow-purple-600/20 px-3 py-2 text-white" href="#">
+<span class="material-symbols-outlined fill">dashboard</span>
+<span class="text-sm font-medium">Dashboard</span>
+</a>
+</li>
+<li>
+<a class="flex items-center gap-3 rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50 transition-colors group" href="#">
+<span class="material-symbols-outlined group-hover:text-accent-blue transition-colors">view_kanban</span>
+<span class="text-sm font-medium">Projects</span>
+</a>
+</li>
+<li>
+<a class="flex items-center gap-3 rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50 transition-colors group" href="#">
+<span class="material-symbols-outlined group-hover:text-accent-blue transition-colors">check_box</span>
+<span class="text-sm font-medium">Tasks</span>
+</a>
+</li>
+<li>
+<a class="flex items-center gap-3 rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50 transition-colors group" href="#">
+<span class="material-symbols-outlined group-hover:text-accent-blue transition-colors">group</span>
+<span class="text-sm font-medium">Team</span>
+</a>
+</li>
+<li>
+<a class="flex items-center gap-3 rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50 transition-colors group" href="#">
+<span class="material-symbols-outlined group-hover:text-accent-blue transition-colors">settings</span>
+<span class="text-sm font-medium">Settings</span>
+</a>
+</li>
+</ul>
+</nav>
+<div class="p-4 border-t border-slate-200 dark:border-slate-800">
+<div class="flex items-center gap-3 rounded-lg p-2 hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer transition-colors group">
+<div class="bg-center bg-no-repeat aspect-square bg-cover rounded-full size-9 ring-2 ring-transparent group-hover:ring-accent-purple transition-all" data-alt="User profile picture showing a smiling professional" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuAuOXfHpZ5nI49hnDKwAcQNztTciQ49PGZeKfdsfN5hZeig6azh2gUGuxQu8dnKZDTVZ9Vo3SnNUa5cyXT3aQzTzBGDjTQw0iqRG45icfvy1mayVu1OjRvkMtgTNwuTD2c3Mn5BVCu2BPYxKpccQkUtBEbWFA7IFWOpWAeLIsdS-K-SKtlaTORgPa2biO17-dbLaEDLpfy9sjbqANAXpXb_6i_1dtEc-LsWR8OD26DMD5xlH3NZr0NrBb7xV84N_sk1BeIhIaOqVGw");'></div>
+<div class="flex flex-col">
+<p class="text-sm font-semibold text-slate-900 dark:text-white group-hover:text-accent-blue transition-colors">Alex Morgan</p>
+<p class="text-xs text-slate-500 dark:text-slate-400">Product Manager</p>
+</div>
+</div>
+</div>
+</aside>
+<main class="flex flex-1 flex-col overflow-hidden relative">
+<header class="flex h-16 items-center justify-between border-b border-slate-200 dark:border-slate-800 bg-surface-light dark:bg-background-dark px-6 lg:px-10 z-10">
+<button class="mr-4 lg:hidden text-slate-500 dark:text-white">
+<span class="material-symbols-outlined">menu</span>
+</button>
+<div class="flex flex-1 max-w-lg">
+<div class="relative w-full group">
+<div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400 group-focus-within:text-accent-blue transition-colors">
+<span class="material-symbols-outlined" style="font-size: 20px;">search</span>
+</div>
+<input class="block w-full rounded-lg border-none bg-slate-50 py-2 pl-10 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-accent-purple/50 dark:bg-surface-dark dark:text-white dark:placeholder:text-slate-500 transition-all" placeholder="Search tasks, projects, or team members..." type="text"/>
+</div>
+</div>
+<div class="ml-4 flex items-center gap-4">
+<button class="relative rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-accent-blue dark:text-slate-400 dark:hover:bg-surface-dark transition-colors">
+<span class="material-symbols-outlined" style="font-size: 20px;">notifications</span>
+<span class="absolute right-2 top-2 h-2 w-2 rounded-full bg-red-500 ring-2 ring-white dark:ring-surface-dark"></span>
+</button>
+<button class="relative rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-accent-blue dark:text-slate-400 dark:hover:bg-surface-dark transition-colors">
+<span class="material-symbols-outlined" style="font-size: 20px;">chat_bubble</span>
+</button>
+<button class="flex items-center gap-2 rounded-lg bg-gradient-primary px-4 py-2 text-sm font-bold text-white shadow-lg shadow-purple-600/30 hover:shadow-purple-600/40 hover:scale-[1.02] active:scale-[0.98] transition-all duration-200">
+<span class="material-symbols-outlined" style="font-size: 18px;">add</span>
+<span class="hidden sm:inline">Create New Task</span>
+</button>
+</div>
+</header>
+<div class="flex-1 overflow-y-auto p-6 lg:p-10 scroll-smooth">
+<div class="mx-auto max-w-7xl flex flex-col gap-8">
+<div class="flex flex-col gap-6">
+<div>
+<h2 class="text-2xl font-bold leading-tight">Dashboard Overview</h2>
+<p class="text-slate-500 dark:text-slate-400">Welcome back, <span class="text-gradient font-semibold">Alex</span>. Here's what's happening today.</p>
+</div>
+<div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+<div class="flex flex-col gap-2 rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 hover:border-accent-blue/30 dark:hover:border-accent-blue/30 transition-all">
+<div class="flex items-center justify-between">
+<p class="text-sm font-medium text-slate-500 dark:text-slate-400">Total Tasks</p>
+<div class="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-light text-accent-blue">
+<span class="material-symbols-outlined" style="font-size: 20px;">assignment</span>
+</div>
+</div>
+<p class="text-3xl font-bold text-slate-900 dark:text-white">45</p>
+<p class="text-sm font-medium text-emerald-500">+5% this week</p>
+</div>
+<div class="flex flex-col gap-2 rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 hover:border-accent-blue/30 dark:hover:border-accent-blue/30 transition-all">
+<div class="flex items-center justify-between">
+<p class="text-sm font-medium text-slate-500 dark:text-slate-400">Pending</p>
+<div class="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-500/10 text-orange-500">
+<span class="material-symbols-outlined" style="font-size: 20px;">hourglass_empty</span>
+</div>
+</div>
+<p class="text-3xl font-bold text-slate-900 dark:text-white">12</p>
+<p class="text-sm font-medium text-emerald-500">+2% this week</p>
+</div>
+<div class="flex flex-col gap-2 rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 hover:border-accent-blue/30 dark:hover:border-accent-blue/30 transition-all">
+<div class="flex items-center justify-between">
+<p class="text-sm font-medium text-slate-500 dark:text-slate-400">In Progress</p>
+<div class="flex h-8 w-8 items-center justify-center rounded-lg bg-purple-500/10 text-purple-600">
+<span class="material-symbols-outlined" style="font-size: 20px;">trending_up</span>
+</div>
+</div>
+<p class="text-3xl font-bold text-slate-900 dark:text-white">5</p>
+<p class="text-sm font-medium text-red-500">-1% this week</p>
+</div>
+<div class="flex flex-col gap-2 rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 hover:border-accent-blue/30 dark:hover:border-accent-blue/30 transition-all">
+<div class="flex items-center justify-between">
+<p class="text-sm font-medium text-slate-500 dark:text-slate-400">Completed</p>
+<div class="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-500">
+<span class="material-symbols-outlined" style="font-size: 20px;">check_circle</span>
+</div>
+</div>
+<p class="text-3xl font-bold text-slate-900 dark:text-white">28</p>
+<p class="text-sm font-medium text-emerald-500">+10% this week</p>
+</div>
+</div>
+</div>
+<div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
+<div class="flex flex-col gap-6 lg:col-span-2">
+<div class="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800">
+<div class="mb-6 flex flex-wrap items-center justify-between gap-4">
+<div>
+<h3 class="text-lg font-bold text-slate-900 dark:text-white">Weekly Productivity</h3>
+<div class="mt-1 flex gap-2">
+<span class="text-3xl font-bold bg-gradient-to-r from-blue-700 to-purple-700 bg-clip-text text-transparent dark:from-blue-500 dark:to-purple-500">82%</span>
+<div class="flex items-center gap-1 text-sm font-medium text-emerald-500">
+<span class="material-symbols-outlined" style="font-size: 16px;">arrow_upward</span>
+<span>5% vs last week</span>
+</div>
+</div>
+</div>
+<select class="rounded-lg border-slate-300 bg-transparent py-1.5 pl-3 pr-8 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-300 focus:border-accent-purple focus:ring-accent-purple dark:focus:border-accent-purple dark:focus:ring-accent-purple">
+<option>This Week</option>
+<option>Last Week</option>
+<option>This Month</option>
+</select>
+</div>
+<div class="grid h-48 grid-cols-7 items-end gap-2 sm:gap-4">
+<div class="group flex flex-col items-center gap-2 h-full justify-end">
+<div class="w-full max-w-[40px] rounded-t bg-slate-200 group-hover:bg-accent-blue/50 dark:bg-slate-700 dark:group-hover:bg-accent-purple transition-all relative h-[40%]">
+<div class="opacity-0 group-hover:opacity-100 absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-2 py-1 rounded">40%</div>
+</div>
+<span class="text-xs font-medium text-slate-500 dark:text-slate-400">Mon</span>
+</div>
+<div class="group flex flex-col items-center gap-2 h-full justify-end">
+<div class="w-full max-w-[40px] rounded-t bg-slate-200 group-hover:bg-accent-blue/50 dark:bg-slate-700 dark:group-hover:bg-accent-purple transition-all relative h-[65%]">
+<div class="opacity-0 group-hover:opacity-100 absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-2 py-1 rounded">65%</div>
+</div>
+<span class="text-xs font-medium text-slate-500 dark:text-slate-400">Tue</span>
+</div>
+<div class="group flex flex-col items-center gap-2 h-full justify-end">
+<div class="w-full max-w-[40px] rounded-t bg-slate-200 group-hover:bg-accent-blue/50 dark:bg-slate-700 dark:group-hover:bg-accent-purple transition-all relative h-[85%]">
+<div class="opacity-0 group-hover:opacity-100 absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-2 py-1 rounded">85%</div>
+</div>
+<span class="text-xs font-medium text-slate-500 dark:text-slate-400">Wed</span>
+</div>
+<div class="group flex flex-col items-center gap-2 h-full justify-end">
+<div class="w-full max-w-[40px] rounded-t bg-slate-200 group-hover:bg-accent-blue/50 dark:bg-slate-700 dark:group-hover:bg-accent-purple transition-all relative h-[55%]">
+<div class="opacity-0 group-hover:opacity-100 absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-2 py-1 rounded">55%</div>
+</div>
+<span class="text-xs font-medium text-slate-500 dark:text-slate-400">Thu</span>
+</div>
+<div class="group flex flex-col items-center gap-2 h-full justify-end">
+<div class="w-full max-w-[40px] rounded-t bg-gradient-primary relative h-[90%] shadow-[0_0_15px_rgba(124,58,237,0.4)]">
+<div class="absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-2 py-1 rounded">90%</div>
+</div>
+<span class="text-xs font-bold text-accent-blue dark:text-accent-purple">Fri</span>
+</div>
+<div class="group flex flex-col items-center gap-2 h-full justify-end">
+<div class="w-full max-w-[40px] rounded-t bg-slate-200 group-hover:bg-accent-blue/50 dark:bg-slate-700 dark:group-hover:bg-accent-purple transition-all relative h-[30%]">
+<div class="opacity-0 group-hover:opacity-100 absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-2 py-1 rounded">30%</div>
+</div>
+<span class="text-xs font-medium text-slate-500 dark:text-slate-400">Sat</span>
+</div>
+<div class="group flex flex-col items-center gap-2 h-full justify-end">
+<div class="w-full max-w-[40px] rounded-t bg-slate-200 group-hover:bg-accent-blue/50 dark:bg-slate-700 dark:group-hover:bg-accent-purple transition-all relative h-[25%]">
+<div class="opacity-0 group-hover:opacity-100 absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs px-2 py-1 rounded">25%</div>
+</div>
+<span class="text-xs font-medium text-slate-500 dark:text-slate-400">Sun</span>
+</div>
+</div>
+</div>
+<div class="flex flex-col rounded-xl bg-surface-light shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800">
+<div class="flex items-center justify-between border-b border-slate-200 px-6 py-4 dark:border-slate-800">
+<h3 class="text-lg font-bold text-slate-900 dark:text-white">My Tasks</h3>
+<button class="text-sm font-medium text-accent-blue hover:text-accent-purple transition-colors">View All</button>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left text-sm text-slate-500 dark:text-slate-400">
+<thead class="bg-slate-50 text-xs uppercase text-slate-700 dark:bg-slate-800/50 dark:text-slate-300">
+<tr>
+<th class="px-6 py-3 font-medium">Task Name</th>
+<th class="px-6 py-3 font-medium">Priority</th>
+<th class="px-6 py-3 font-medium">Status</th>
+<th class="px-6 py-3 font-medium">Due Date</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-slate-200 dark:divide-slate-800">
+<tr class="group hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="whitespace-nowrap px-6 py-4">
+<div class="flex items-center gap-3">
+<div class="flex h-8 w-8 items-center justify-center rounded bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">
+<span class="material-symbols-outlined" style="font-size: 18px;">description</span>
+</div>
+<span class="font-medium text-slate-900 dark:text-white">Update API Docs</span>
+</div>
+</td>
+<td class="whitespace-nowrap px-6 py-4">
+<span class="inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/30 dark:text-red-300">
+                                                        High
+                                                    </span>
+</td>
+<td class="whitespace-nowrap px-6 py-4">
+<span class="inline-flex items-center gap-1.5 rounded-full border border-blue-200 px-2.5 py-0.5 text-xs font-medium text-blue-800 dark:border-blue-900 dark:text-blue-300">
+<span class="h-1.5 w-1.5 rounded-full bg-blue-500"></span>
+                                                        In Progress
+                                                    </span>
+</td>
+<td class="whitespace-nowrap px-6 py-4">Today</td>
+</tr>
+<tr class="group hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="whitespace-nowrap px-6 py-4">
+<div class="flex items-center gap-3">
+<div class="flex h-8 w-8 items-center justify-center rounded bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-300">
+<span class="material-symbols-outlined" style="font-size: 18px;">brush</span>
+</div>
+<span class="font-medium text-slate-900 dark:text-white">Review Q3 Designs</span>
+</div>
+</td>
+<td class="whitespace-nowrap px-6 py-4">
+<span class="inline-flex items-center rounded-full bg-yellow-100 px-2.5 py-0.5 text-xs font-medium text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300">
+                                                        Medium
+                                                    </span>
+</td>
+<td class="whitespace-nowrap px-6 py-4">
+<span class="inline-flex items-center gap-1.5 rounded-full border border-slate-200 px-2.5 py-0.5 text-xs font-medium text-slate-600 dark:border-slate-700 dark:text-slate-400">
+<span class="h-1.5 w-1.5 rounded-full bg-slate-400"></span>
+                                                        Pending
+                                                    </span>
+</td>
+<td class="whitespace-nowrap px-6 py-4">Tomorrow</td>
+</tr>
+<tr class="group hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
+<td class="whitespace-nowrap px-6 py-4">
+<div class="flex items-center gap-3">
+<div class="flex h-8 w-8 items-center justify-center rounded bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300">
+<span class="material-symbols-outlined" style="font-size: 18px;">bug_report</span>
+</div>
+<span class="font-medium text-slate-900 dark:text-white">Fix Login Auth Bug</span>
+</div>
+</td>
+<td class="whitespace-nowrap px-6 py-4">
+<span class="inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/30 dark:text-red-300">
+                                                        High
+                                                    </span>
+</td>
+<td class="whitespace-nowrap px-6 py-4">
+<span class="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 px-2.5 py-0.5 text-xs font-medium text-emerald-800 dark:border-emerald-900 dark:text-emerald-300">
+<span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
+                                                        Completed
+                                                    </span>
+</td>
+<td class="whitespace-nowrap px-6 py-4">Yesterday</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div class="flex flex-col gap-6">
+<div class="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800">
+<h3 class="mb-4 text-lg font-bold text-slate-900 dark:text-white">Upcoming Deadlines</h3>
+<div class="flex flex-col gap-4">
+<div class="flex items-start gap-4 rounded-lg bg-slate-50 p-3 dark:bg-slate-800/50 border-l-4 border-red-500">
+<div class="flex flex-1 flex-col">
+<p class="text-sm font-semibold text-slate-900 dark:text-white">Client Presentation</p>
+<p class="text-xs text-slate-500 dark:text-slate-400">Preparation for Q4 roadmap</p>
+</div>
+<span class="text-xs font-bold text-red-500 whitespace-nowrap">2h left</span>
+</div>
+<div class="flex items-start gap-4 rounded-lg bg-slate-50 p-3 dark:bg-slate-800/50 border-l-4 border-orange-500">
+<div class="flex flex-1 flex-col">
+<p class="text-sm font-semibold text-slate-900 dark:text-white">Database Migration</p>
+<p class="text-xs text-slate-500 dark:text-slate-400">Shift to new AWS instance</p>
+</div>
+<span class="text-xs font-bold text-orange-500 whitespace-nowrap">5h left</span>
+</div>
+<div class="flex items-start gap-4 rounded-lg bg-slate-50 p-3 dark:bg-slate-800/50 border-l-4 border-blue-500">
+<div class="flex flex-1 flex-col">
+<p class="text-sm font-semibold text-slate-900 dark:text-white">Team Sync</p>
+<p class="text-xs text-slate-500 dark:text-slate-400">Weekly standup meeting</p>
+</div>
+<span class="text-xs font-bold text-blue-500 whitespace-nowrap">Tomorrow</span>
+</div>
+</div>
+<button class="mt-4 w-full rounded-lg border border-slate-200 py-2 text-sm font-medium text-slate-600 hover:text-accent-blue hover:border-accent-blue/50 dark:border-slate-700 dark:text-slate-300 dark:hover:text-white dark:hover:bg-slate-800 transition-colors">
+                                    View Calendar
+                                </button>
+</div>
+<div class="flex flex-1 flex-col rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800">
+<div class="mb-4 flex items-center justify-between">
+<h3 class="text-lg font-bold text-slate-900 dark:text-white">Active Projects</h3>
+<button class="text-slate-400 hover:text-white">
+<span class="material-symbols-outlined">more_horiz</span>
+</button>
+</div>
+<div class="flex flex-col gap-6">
+<div class="group flex flex-col gap-2">
+<div class="flex justify-between">
+<span class="text-sm font-semibold text-slate-900 dark:text-white">Project Alpha</span>
+<span class="text-xs font-medium text-slate-500 dark:text-slate-400">75%</span>
+</div>
+<div class="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+<div class="h-full rounded-full bg-gradient-primary" style="width: 75%"></div>
+</div>
+<div class="mt-1 flex -space-x-2">
+<div class="h-6 w-6 rounded-full border-2 border-white bg-cover bg-center dark:border-surface-dark" data-alt="Team member portrait 1" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuC70sW_D5zF4T-i6_vxNeDZHOD7Uhi2g14dM0BtPrsKY6hNEYwdQ02r0fBTDzQIvDqxJUQUCIAcRxpp26k-bCoh2Cdpa-LDPte0hbV3UVUAzOqZfYnzh4zNwdwrtf2AEXV71j1kdLOtOhqXoaURGGrI13d0VaVOVx1vGrrPdXsGAUItoIIRm7O_5krXcBFmiPMqHoT4MiHSrU3eFPytkIMatIj2LWYAyxbcW6dYdmHgXeNb2W5f1WQzOCIQn5vR2-kxb9FvIlCjA1k");'></div>
+<div class="h-6 w-6 rounded-full border-2 border-white bg-cover bg-center dark:border-surface-dark" data-alt="Team member portrait 2" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuDSPJlftG_XHRVkG03smKochkbBsOHmNTSIhVYSnHU_RBPEpTmhOdbhlRjH-XpNyveJCBnIVec6EK-SYYqXiLAjD12XEbAgiTYD8QW4WBMIfmDhMIt8K9GjkArZHOm5NsMS74LttLrJhcqudKcYGyYM3sY7hP1xBSSx8rjjRnC_WCbhfjUhxrkfMoXPRAsLB93Y1Mgr8iK9c93gzrTdUSZoYYyvsuxnRDmKlbwnjY4QUvB2ZH9QwvH0gXoygLWLMXIUZUORdG4xqHw");'></div>
+<div class="flex h-6 w-6 items-center justify-center rounded-full border-2 border-white bg-slate-200 text-[10px] font-medium text-slate-600 dark:border-surface-dark dark:bg-slate-700 dark:text-slate-300">+3</div>
+</div>
+</div>
+<div class="group flex flex-col gap-2">
+<div class="flex justify-between">
+<span class="text-sm font-semibold text-slate-900 dark:text-white">Website Redesign</span>
+<span class="text-xs font-medium text-slate-500 dark:text-slate-400">40%</span>
+</div>
+<div class="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+<div class="h-full rounded-full bg-purple-500" style="width: 40%"></div>
+</div>
+<div class="mt-1 flex -space-x-2">
+<div class="h-6 w-6 rounded-full border-2 border-white bg-cover bg-center dark:border-surface-dark" data-alt="Team member portrait 3" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuBh-o2b1s8WlIaob1kzF8Pmg8Wz7U6mE0lJ7QIxtc2U16Pt6Un-VtMWKkIE_T7nz4b5OmKJALPFHkVMOqpOqxS_9bEHUwXI-OxTrW_UsBOngJ3dL5MQ3LsjxemIiuQl4Nc0NIA-yfc1ZVPcc-0XFznQ0cCoL0W1yokG5qTZP_Q8KR4Ut4BOfmrFDgrijEcf5B6WHlPjo_j_WxqpQZq9jeZxSy6dbVnFvznPPwNGUqW5eFomWqEiKYrCosdHe9XSzUtvJlaFCBVjNkM");'></div>
+<div class="h-6 w-6 rounded-full border-2 border-white bg-cover bg-center dark:border-surface-dark" data-alt="Team member portrait 4" style='background-image: url("https://lh3.googleusercontent.com/aida-public/AB6AXuAuG5MpLt9FMmSYrnd-uJI4VaKblOc_35UE4r1RrMIAgsHfAaaS9PGWANPAqNcMthvoE8VLrdJO50YfESvrZ1JF_VvHqTY-vLxBzF4gL6DVQeDQbMRKSbKPrPd8gOTnLL7Ot4USMvOygWmYWdStws4oARX2nSLBtGswB2armfH6JFr7nes0f_x4UoTYkhX2TDYR4hpOiupUtRvRHH3JTPudw5mXZBNB6vTuOVsUV-hDtQvsn2KVVN7Ri_47b68k50Q31KjIKrJ4_uI");'></div>
+</div>
+</div>
+<div class="group flex flex-col gap-2">
+<div class="flex justify-between">
+<span class="text-sm font-semibold text-slate-900 dark:text-white">Mobile App V2</span>
+<span class="text-xs font-medium text-slate-500 dark:text-slate-400">12%</span>
+</div>
+<div class="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+<div class="h-full rounded-full bg-orange-500" style="width: 12%"></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+</div>
+</body></html>

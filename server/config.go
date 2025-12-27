@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -75,3 +78,35 @@ func InitDatabase() (*gorm.DB, error) {
 	return db, nil
 }
 
+type RedisConfig struct {
+	Addr     string
+	Password string
+	DB       int
+}
+
+func LoadRedisConfig() RedisConfig {
+	dbIndex, err := strconv.Atoi(GetEnv("REDIS_DB", "0"))
+	if err != nil {
+		dbIndex = 0
+	}
+	return RedisConfig{
+		Addr:     GetEnv("REDIS_ADDR", "localhost:6379"),
+		Password: GetEnv("REDIS_PASSWORD", ""),
+		DB:       dbIndex,
+	}
+}
+
+func InitRedis() (*redis.Client, error) {
+	cfg := LoadRedisConfig()
+	client := redis.NewClient(&redis.Options{
+		Addr:     cfg.Addr,
+		Password: cfg.Password,
+		DB:       cfg.DB,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Ping(ctx).Err(); err != nil {
+		return nil, err
+	}
+	return client, nil
+}

@@ -35,7 +35,7 @@ github： git@github.com:zalsay/auto-tauri.git
    - 主要职责：
      - 用户注册 / 登录 / JWT 鉴权中间件。
      - 用户积分账户管理（`users.balance`）。
-     - 充值流水、消费记录、退款记录（`transactions`）。
+     - 充值流水、消费记录、退款记录（`transactions`）。 Ps: 加入redis处理原子操作，数据库同步任务进行更新
      - 任务元数据记录（`tasks`）——任务指令、状态、积分成本等。
    - 安全要求：
      - 所有积分变动必须走服务端事务，前端仅展示状态。
@@ -126,17 +126,17 @@ github： git@github.com:zalsay/auto-tauri.git
 
 ### 第二阶段：Gin 后端服务与积分认证（Week 2）【当前重点】
 
-- [ ] **后端基础框架**
+- [x] **后端基础框架**
   - 基于 Gin 搭建 REST API：
     - 用户注册：`POST /api/v1/auth/register`。
     - 用户登录：`POST /api/v1/auth/login`。
-    - 用户信息查询：`GET /api/v1/users/me`。
+  - 用户信息查询：`GET /api/v1/users/me`。
   - 集成 GORM 连接 PostgreSQL，定义 `User`、`Transaction`、`Task` 模型与自动迁移。
   - 实现 JWT 生成与解析逻辑，封装 Gin 中间件：
     - 校验 Token 合法性与过期时间。
     - 将 `userID` 注入 `context`，供业务处理使用。
 
-- [ ] **积分系统开发**
+- [x] **积分系统开发**
   - 充值接口：
     - `POST /api/v1/credits/recharge`，模拟或集成真实支付渠道前的临时充值逻辑。
     - 写入 `transactions` 记录，更新 `users.balance`。
@@ -146,8 +146,9 @@ github： git@github.com:zalsay/auto-tauri.git
       - 若余额不足，返回错误。
       - 扣减余额，写入 `transactions` 消费记录。
     - 为任务启动接口提供统一扣费能力。
+  - 使用 Redis 对单用户积分操作加锁，避免并发条件竞争，并保持数据库事务落地。
 
-- [ ] **前端对接（Tauri 内嵌页面）**
+- [x] **前端对接（Tauri 内嵌页面）**
   - 在 Tauri 前端实现登录 / 注册页，与 Gin 后端完成 JWT 登录流程。
   - 将 Token 安全存储（例如：加密写入本地配置文件或安全存储）。
   - 在应用主界面的头部或侧栏展示积分余额，支持手动刷新与自动轮询。

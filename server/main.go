@@ -6,7 +6,13 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 )
+
+var globalDB *gorm.DB
+var jwtSecret []byte
+var redisClient *redis.Client
 
 func setupRouter() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
@@ -20,6 +26,20 @@ func setupRouter() *gin.Engine {
 		})
 	})
 
+	api := r.Group("/api/v1")
+	authGroup := api.Group("/auth")
+	authGroup.POST("/register", registerHandler)
+	authGroup.POST("/login", loginHandler)
+	authGroup.GET("/me", authMiddleware(), meHandler)
+
+	creditsGroup := api.Group("/credits")
+	creditsGroup.Use(authMiddleware())
+	creditsGroup.POST("/recharge", rechargeHandler)
+
+	tasksGroup := api.Group("/tasks")
+	tasksGroup.Use(authMiddleware())
+	tasksGroup.POST("/start", startTaskHandler)
+
 	return r
 }
 
@@ -28,12 +48,21 @@ func main() {
 		log.Printf("warning: cannot load env file: %v", err)
 	}
 
-	db, err := InitDatabase()
+	database, err := InitDatabase()
 	if err != nil {
 		log.Fatalf("failed to init database: %v", err)
 	}
 
-	if err := AutoMigrate(db); err != nil {
+	globalDB = database
+	secret := GetEnv("JWT_SECRET", "auto-tauri-dev-secret")
+	jwtSecret = []byte(secret)
+	client, err := InitRedis()
+	if err != nil {
+		log.Fatalf("failed to init redis: %v", err)
+	}
+	redisClient = client
+
+	if err := AutoMigrate(database); err != nil {
 		log.Fatalf("failed to migrate database: %v", err)
 	}
 
