@@ -1,0 +1,22 @@
+{
+  "name": "sidecar",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "bin": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "package": "npm run build && pkg . --targets node18-macos-arm64 --output ../desktop/src-tauri/binaries/hyperagent-aarch64-apple-darwin",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@types/node": "^25.0.3",
+    "pkg": "^5.8.1",
+    "playwright": "^1.57.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

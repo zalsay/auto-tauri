@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import "./App.css";
 import { apiRequest, clearStoredToken, getStoredToken, setStoredToken } from "./api";
+import { Command } from "@tauri-apps/plugin-shell";
 
 type View = "login" | "register" | "main";
 
@@ -9,6 +10,7 @@ type User = {
 	email: string;
 	balance: number;
 };
+// ... rest of types
 
 type AuthResponseUser = {
 	id: string;
@@ -23,6 +25,7 @@ type AuthResponse = {
 
 function App() {
 	const [view, setView] = useState<View>("login");
+	// ... existing state
 	const [email, setEmail] = useState("");
 	const [password, setPassword] = useState("");
 	const [user, setUser] = useState<User | null>(null);
@@ -30,8 +33,10 @@ function App() {
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string>("");
 	const [rechargeAmount, setRechargeAmount] = useState("100");
+	const [targetUrl, setTargetUrl] = useState("");
 	const [taskPrompt, setTaskPrompt] = useState("");
 	const [taskMessage, setTaskMessage] = useState("");
+	const [taskLogs, setTaskLogs] = useState<string[]>([]);
 
 	useEffect(() => {
 		const storedToken = getStoredToken();
@@ -132,7 +137,9 @@ function App() {
 		setLoading(true);
 		setError("");
 		setTaskMessage("");
+		setTaskLogs([]);
 		try {
+			// 1. Deduct credits via Backend
 			const data = (await apiRequest("/api/v1/tasks/start", {
 				method: "POST",
 				body: JSON.stringify({ prompt: taskPrompt }),
@@ -140,15 +147,58 @@ function App() {
 					Authorization: "Bearer " + token,
 				},
 			})) as { task_id: string; message: string };
+			
 			setTaskMessage(data.message + " (任务ID: " + data.task_id + ")");
+			
+			// Refresh User Balance
 			const me = (await apiRequest("/api/v1/auth/me", {
 				headers: {
 					Authorization: "Bearer " + token,
 				},
 			})) as AuthResponseUser;
 			setUser({ id: me.id, email: me.email, balance: me.balance });
+
+			// 2. Start Sidecar
+			const command = Command.sidecar("hyperagent");
+			
+			command.stderr.on('data', (line) => {
+				console.log('STDERR:', line);
+				try {
+					const logEvent = JSON.parse(line);
+					setTaskLogs(prev => [...prev, `[${logEvent.type}] ${logEvent.message}`]);
+				} catch {
+					setTaskLogs(prev => [...prev, line]);
+				}
+			});
+
+			command.stdout.on('data', (line) => {
+				console.log('STDOUT:', line);
+				try {
+					const result = JSON.parse(line);
+					setTaskMessage(prev => prev + "\n执行结果: " + JSON.stringify(result.data));
+				} catch {
+					// Ignore raw output if not JSON
+				}
+			});
+
+			const child = await command.spawn();
+			console.log("Sidecar spawned");
+
+			const taskType = targetUrl ? "xhs_automation" : "default";
+
+			const payload = JSON.stringify({
+				taskId: data.task_id,
+				type: taskType,
+				url: targetUrl, 
+				prompt: taskPrompt
+			});
+			
+			await child.write(payload + "\n");
+			console.log("Payload sent");
+
 		} catch (e: any) {
-			setError("启动任务失败");
+			console.error(e);
+			setError("启动任务失败: " + (e.message || "Unknown error"));
 		} finally {
 			setLoading(false);
 		}
@@ -231,16 +281,33 @@ function App() {
 					</form>
 					<h3>启动任务</h3>
 					<form onSubmit={handleStartTask}>
-						<textarea
-							placeholder="输入任务指令..."
-							value={taskPrompt}
-							onChange={(e) => setTaskPrompt(e.target.value)}
-						/>
+						<div style={{ marginBottom: '10px' }}>
+							<input
+								type="text"
+								placeholder="目标网址 (为空则运行模拟测试)"
+								value={targetUrl}
+								onChange={(e) => setTargetUrl(e.target.value)}
+								style={{ width: '100%', padding: '8px' }}
+							/>
+						</div>
+						<div style={{ marginBottom: '10px' }}>
+							<textarea
+								placeholder="输入任务指令 (例如: 抓取页面并发布到小红书)"
+								value={taskPrompt}
+								onChange={(e) => setTaskPrompt(e.target.value)}
+								style={{ width: '100%', minHeight: '80px', padding: '8px' }}
+							/>
+						</div>
 						<button type="submit" disabled={loading}>
 							开始任务
 						</button>
 					</form>
-					{taskMessage && <p>{taskMessage}</p>}
+					{taskMessage && <pre style={{textAlign: 'left', background: '#f0f0f0', padding: '10px'}}>{taskMessage}</pre>}
+					{taskLogs.length > 0 && (
+						<div style={{textAlign: 'left', background: '#333', color: '#fff', padding: '10px', marginTop: '10px', height: '200px', overflowY: 'scroll'}}>
+							{taskLogs.map((log, i) => <div key={i}>{log}</div>)}
+						</div>
+					)}
 				</section>
 			)}
 		</main>

@@ -7,3 +7,16 @@
 - 2025-12-28：在 `server` 中实现 `POST /api/v1/auth/register`、`POST /api/v1/auth/login`（JWT）、`POST /api/v1/credits/recharge` 与 `POST /api/v1/tasks/start` 的接口骨架和事务扣费逻辑。
 - 2025-12-28：在 `server` 中新增 `GET /api/v1/auth/me` 接口，用于返回当前用户信息，并在 `desktop` 中替换默认示例页面，接入注册、登录、积分充值与任务启动的前端界面，使用本地存储保存 JWT，并通过环境变量支持后端地址配置。
  - 2025-12-28：在 `server` 中集成 Redis 客户端，通过用户级 Redis 锁保护积分充值与任务扣费的原子性，更新 `.env.example` 和 `plan.md` 以反映配置与设计。
+- 2025-12-30：完成 Sidecar 基础建设：
+  - 初始化 `sidecar` 目录，创建基于 Node.js + TypeScript 的 CLI 工具。
+  - 实现 Sidecar 与主进程的通信协议：通过 stdio (stdin/stdout/stderr) 接收 JSON 任务指令并流式输出日志与结果。
+  - 使用 `pkg` 将 Sidecar 打包为独立二进制文件 (`hyperagent`)，适配 macOS arm64 架构。
+- 2025-12-30：完成 Tauri 与 Sidecar 的集成：
+  - 配置 `tauri.conf.json` 注册 externalBin。
+  - 配置 `capabilities` 允许 `shell:allow-execute` 权限。
+  - 在前端 `App.tsx` 中引入 `@tauri-apps/plugin-shell`，实现「扣费成功 -> 启动 Sidecar -> 实时展示日志 -> 展示结果」的完整闭环。
+  - 修复 Tauri 构建问题：将 Sidecar 二进制文件移动至 `src-tauri/` 根目录以确保构建脚本正确识别 `externalBin`。
+- 2025-12-30：实现 Auto Agents 功能：
+  - 新增 `sidecar/src/auto_agents` 模块，集成 Playwright 自动化逻辑。
+  - 实现「访问 URL -> 截图 -> 自动发布至小红书」的完整链路（需用户手动扫码/登录）。
+  - 更新前端界面，支持输入目标 URL 触发自动化任务。
