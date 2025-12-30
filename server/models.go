@@ -28,6 +28,7 @@ type Task struct {
 	ID        string    `gorm:"primaryKey;type:uuid"`
 	UserID    string    `gorm:"index;type:uuid;not null"`
 	Prompt    string    `gorm:"type:text;not null"`
+	Type      string    `gorm:"size:32;not null;default:'workflow'"`
 	Status    string    `gorm:"size:32;not null"`
 	Cost      int64     `gorm:"not null;default:0"`
 	CreatedAt time.Time `gorm:"autoCreateTime"`

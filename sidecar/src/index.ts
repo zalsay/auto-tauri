@@ -10,7 +10,7 @@ async function main() {
     terminal: false
   });
 
-  log('Sidecar ready. Waiting for input...');
+  log('Sidecar 已就绪。等待输入...');
 
   for await (const line of rl) {
     if (line.trim()) {
@@ -20,7 +20,7 @@ async function main() {
         // We only handle one task per invocation
         break; 
       } catch (e: any) {
-        log(`Error parsing input: ${e.message}`);
+        log(`输入解析错误: ${e.message}`);
         process.exit(1);
       }
     }
@@ -28,10 +28,10 @@ async function main() {
 }
 
 async function processTask(input: any) {
-  log(`Received task: ${input.taskId}`);
-  log(`Type: ${input.type || 'default'}`);
+  log(`收到任务: ${input.taskId}`);
+  log(`类型: ${input.type || 'default'}`);
 
-  if (input.type === 'xhs_automation') {
+  if (input.type === 'xhs_automation' || input.type === 'scrape') {
      await handleXHSAutomation(input);
   } else {
      await handleDefaultMock(input);
@@ -39,8 +39,8 @@ async function processTask(input: any) {
 }
 
 async function handleXHSAutomation(input: any) {
-    log('Launching Browser for XHS Automation...');
-    // We launch non-headless so the user can see/interact (especially for XHS login)
+    log('正在启动浏览器进行网页获取...');
+    // We launch non-headless so the user can see/interact (especially for login)
     const browser = await chromium.launch({ headless: false });
     const context = await browser.newContext({
         viewport: { width: 1280, height: 800 },
@@ -55,7 +55,7 @@ async function handleXHSAutomation(input: any) {
             data: result
         }));
     } catch (e: any) {
-        log(`Error in automation: ${e.message}`);
+        log(`自动化执行错误: ${e.message}`);
         console.log(JSON.stringify({
             taskId: input.taskId,
             status: 'failed',
@@ -64,7 +64,7 @@ async function handleXHSAutomation(input: any) {
     } finally {
         // Keep browser open for a bit if we want user to see it, otherwise close
         // await browser.close();
-        log('Automation sequence finished.');
+        log('自动化流程结束。');
         // We exit process after a delay to allow stdout to flush? 
         // Or we just let the parent kill us. 
         // For the purpose of "leaving the window open", we might need to NOT exit immediately 
@@ -77,15 +77,15 @@ async function handleXHSAutomation(input: any) {
 }
 
 async function handleDefaultMock(input: any) {
-  log(`Target URL: ${input.url || 'N/A'}`);
-  log(`Prompt: ${input.prompt}`);
+  log(`目标 URL: ${input.url || 'N/A'}`);
+  log(`提示词: ${input.prompt}`);
 
   // Mock processing
-  log('Starting browser...');
+  log('启动浏览器...');
   await sleep(1000);
-  log('Navigating to page...');
+  log('导航到页面...');
   await sleep(1000);
-  log('Extracting data...');
+  log('提取数据...');
   await sleep(1000);
 
   // Result
@@ -93,8 +93,8 @@ async function handleDefaultMock(input: any) {
     taskId: input.taskId,
     status: 'success',
     data: {
-      title: 'Mock Page Title',
-      summary: 'This is a mock result extracted from the page.',
+      title: '模拟页面标题',
+      summary: '这是从页面提取的模拟结果。',
       price: '$99.99'
     }
   };

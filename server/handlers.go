@@ -45,6 +45,7 @@ type RechargeRequest struct {
 
 type TaskStartRequest struct {
 	Prompt string `json:"prompt"`
+	Type   string `json:"type"`
 }
 
 type TaskStartResponse struct {
@@ -293,6 +294,11 @@ func startTaskHandler(c *gin.Context) {
 	}
 	taskCost := int64(10)
 	taskID := uuid.NewString()
+	taskType := req.Type
+	if taskType == "" {
+		taskType = "workflow"
+	}
+
 	err := runWithUserLockAndTx(userID, func(tx *gorm.DB) error {
 		var user User
 		if err := tx.Where("id = ?", userID).First(&user).Error; err != nil {
@@ -318,6 +324,7 @@ func startTaskHandler(c *gin.Context) {
 			ID:     taskID,
 			UserID: user.ID,
 			Prompt: req.Prompt,
+			Type:   taskType,
 			Status: "pending",
 			Cost:   taskCost,
 		}

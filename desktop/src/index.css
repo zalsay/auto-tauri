@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #4338ca;
+  --color-background-light: #f8fafc;
+  --color-background-dark: #0f172a;
+  --color-surface-dark: #1e293b;
+  --color-surface-light: #FFFFFF;
+  --color-accent-blue: #2563eb;
+  --color-accent-purple: #7c3aed;
+
+  --background-image-gradient-primary: linear-gradient(135deg, #1d4ed8 0%, #7e22ce 100%);
+  --background-image-gradient-hover: linear-gradient(135deg, #1e40af 0%, #6b21a8 100%);
+  --background-image-gradient-light: linear-gradient(135deg, rgba(29, 78, 216, 0.15) 0%, rgba(126, 34, 206, 0.15) 100%);
+  --background-image-gradient-text: linear-gradient(135deg, #1d4ed8 0%, #7e22ce 100%);
+
+  --font-display: Inter, sans-serif;
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer utilities {
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+    font-size: 24px;
+  }
+  .material-symbols-outlined.fill {
+    font-variation-settings: 'FILL' 1;
+  }
+  .text-gradient {
+    background: linear-gradient(135deg, #1d4ed8 0%, #7e22ce 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+::-webkit-scrollbar-track {
+    background: transparent; 
+}
+::-webkit-scrollbar-thumb {
+    background: #475569; 
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #64748b; 
+}
+
+body {
+    @apply bg-background-light dark:bg-background-dark text-slate-900 dark:text-white font-display overflow-hidden;
+}
