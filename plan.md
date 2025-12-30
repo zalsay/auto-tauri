@@ -5,6 +5,7 @@
 ---
 ## 0. 项目配置
 github： git@github.com:zalsay/auto-tauri.git
+使用文档：[usage.md](./usage.md)
 
 ## 1. 项目愿景
 
@@ -188,7 +189,9 @@ github： git@github.com:zalsay/auto-tauri.git
 ### 第五阶段：优化与打磨（Week 5）
 
 - [ ] **性能优化**
-  - 引入 HyperAgent 的缓存机制，复用相似 Prompt 与页面结构，减少 LLM Token 消耗。
+  - **HyperAgent 动作缓存 (Action Cache)**：
+    - 利用 `agent.runFromActionCache()` 实现「一次生成，多次复用」。
+    - 逻辑：对 `(URL + Prompt)` 生成哈希指纹，首次运行调用 LLM 并保存 `actionCache` JSON 到本地；后续运行直接加载缓存回放操作，零 Token 消耗。
   - 优化 Playwright 启动速度：复用浏览器上下文、尽量采用无头模式。
 
 - [ ] **UI/UX 增强**
