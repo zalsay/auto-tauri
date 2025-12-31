@@ -4,8 +4,8 @@
   "main": "dist/index.js",
   "bin": "dist/index.js",
   "scripts": {
-    "build": "tsc",
-    "package": "npm run build && pkg . --targets node18-macos-arm64 --output ../desktop/src-tauri/binaries/hyperagent-aarch64-apple-darwin",
+    "build": "tsc && ncc build dist/index.js -o dist/bundle",
+    "package": "npm run build && pkg dist/bundle/index.js --targets node18-macos-arm64 --output ../desktop/src-tauri/binaries/hyperagent-aarch64-apple-darwin",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -14,6 +14,7 @@
   "description": "",
   "devDependencies": {
     "@types/node": "^25.0.3",
+    "@vercel/ncc": "^0.38.3",
     "pkg": "^5.8.1",
     "playwright": "^1.57.0",
     "ts-node": "^10.9.2",

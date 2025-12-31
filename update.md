@@ -55,3 +55,11 @@
     - 完善执行流：点击启动 -> 后端生成任务 -> 跳转执行详情页 -> 实时日志流。
     - 更新「任务历史」列表，展示所有项目执行的历史记录。
   - **文档更新**：同步更新 `plan.md`，纠正逻辑偏差。
+
+- 2025-12-31：Sidecar 执行引擎增强与 LLM 配置同步：
+  - **前端 Payload 完善**：在执行项目时，将用户设置中的 `llmProvider`, `llmModel`, `llmApiKey` 实时传递给 Sidecar。
+  - **TaskMaster 映射逻辑**：
+    - 在 Sidecar 内部实现映射：当 Provider 为 `TaskMaster` 时，自动转向 `openrouter`。
+    - 设置默认模型为 `google/gemini-3-flash-preview`（针对 TaskMaster）。
+    - 优先级处理：如果用户未在设置中提供 API Key，Sidecar 将自动回退使用系统环境变量中的 `OPENROUTER_API_KEY`。
+  - **构建与同步**：重新编译并打包 Sidecar 二进制文件，确保映射逻辑生效。

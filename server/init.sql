@@ -6,6 +6,10 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(255) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
     balance BIGINT NOT NULL DEFAULT 0,
+    llm_provider VARCHAR(64) DEFAULT 'TaskMaster',
+    llm_model VARCHAR(64) DEFAULT 'auto',
+    llm_api_key VARCHAR(255),
+    llm_base_url VARCHAR(255) DEFAULT 'https://openrouter.ai/api/v1',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );

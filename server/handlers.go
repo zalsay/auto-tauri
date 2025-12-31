@@ -28,9 +28,13 @@ type LoginRequest struct {
 }
 
 type AuthResponseUser struct {
-	ID      string `json:"id"`
-	Email   string `json:"email"`
-	Balance int64  `json:"balance"`
+	ID          string `json:"id"`
+	Email       string `json:"email"`
+	Balance     int64  `json:"balance"`
+	LLMProvider string `json:"llmProvider"`
+	LLMModel    string `json:"llmModel"`
+	LLMAPIKey   string `json:"llmApiKey"`
+	LLMBaseURL  string `json:"llmBaseUrl"`
 }
 
 type AuthResponse struct {
@@ -58,6 +62,18 @@ type TaskStartResponse struct {
 
 type TaskStatusUpdateRequest struct {
 	Status string `json:"status"`
+}
+
+type ChangePasswordRequest struct {
+	OldPassword string `json:"oldPassword" binding:"required"`
+	NewPassword string `json:"newPassword" binding:"required"`
+}
+
+type UserSettingsUpdateRequest struct {
+	LLMProvider string `json:"llmProvider"`
+	LLMModel    string `json:"llmModel"`
+	LLMAPIKey   string `json:"llmApiKey"`
+	LLMBaseURL  string `json:"llmBaseUrl"`
 }
 
 func runWithUserLockAndTx(userID string, fn func(tx *gorm.DB) error) error {
@@ -91,9 +107,13 @@ func meHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, AuthResponseUser{
-		ID:      user.ID,
-		Email:   user.Email,
-		Balance: user.Balance,
+		ID:          user.ID,
+		Email:       user.Email,
+		Balance:     user.Balance,
+		LLMProvider: user.LLMProvider,
+		LLMModel:    user.LLMModel,
+		LLMAPIKey:   user.LLMAPIKey,
+		LLMBaseURL:  user.LLMBaseURL,
 	})
 }
 
@@ -104,7 +124,14 @@ func registerHandler(c *gin.Context) {
 		return
 	}
 	hash, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	user := User{ID: uuid.NewString(), Email: req.Email, PasswordHash: string(hash)}
+	user := User{
+		ID:           uuid.NewString(),
+		Email:        req.Email,
+		PasswordHash: string(hash),
+		LLMProvider:  "TaskMaster",
+		LLMModel:     "google/gemini-2.0-flash-exp:free",
+		LLMBaseURL:   "https://openrouter.ai/api/v1",
+	}
 	if err := globalDB.Create(&user).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_create_user"})
 		return
@@ -130,7 +157,18 @@ func loginHandler(c *gin.Context) {
 	claims := jwt.MapClaims{"sub": user.ID, "exp": time.Now().Add(24 * time.Hour).Unix()}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, _ := token.SignedString(jwtSecret)
-	c.JSON(http.StatusOK, AuthResponse{Token: tokenString, User: AuthResponseUser{ID: user.ID, Email: user.Email, Balance: user.Balance}})
+	c.JSON(http.StatusOK, AuthResponse{
+		Token: tokenString,
+		User: AuthResponseUser{
+			ID:          user.ID,
+			Email:       user.Email,
+			Balance:     user.Balance,
+			LLMProvider: user.LLMProvider,
+			LLMModel:    user.LLMModel,
+			LLMAPIKey:   user.LLMAPIKey,
+			LLMBaseURL:  user.LLMBaseURL,
+		},
+	})
 }
 
 func authMiddleware() gin.HandlerFunc {
@@ -166,6 +204,68 @@ func rechargeHandler(c *gin.Context) {
 	var user User
 	globalDB.Where("id = ?", userID).First(&user)
 	c.JSON(http.StatusOK, gin.H{"balance": user.Balance})
+}
+
+func changePasswordHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	var req ChangePasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		return
+	}
+
+	var user User
+	if err := globalDB.Where("id = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user_not_found"})
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.OldPassword)); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_old_password"})
+		return
+	}
+
+	newHash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_hash_password"})
+		return
+	}
+
+	if err := globalDB.Model(&user).Update("password_hash", string(newHash)).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_update_password"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "password_changed"})
+}
+
+func updateUserSettingsHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	var req UserSettingsUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		return
+	}
+
+	updates := make(map[string]interface{})
+	if req.LLMProvider != "" {
+		updates["llm_provider"] = req.LLMProvider
+	}
+	if req.LLMModel != "" {
+		updates["llm_model"] = req.LLMModel
+	}
+	if req.LLMBaseURL != "" {
+		updates["llm_base_url"] = req.LLMBaseURL
+	}
+	// Always update API Key (allow clearing)
+	updates["llm_api_key"] = req.LLMAPIKey
+
+	if err := globalDB.Model(&User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_update_settings"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "settings_updated"})
 }
 
 // Project Handlers

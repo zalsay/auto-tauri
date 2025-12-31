@@ -11,7 +11,7 @@
       "identifier": "shell:allow-execute",
       "allow": [
         {
-          "name": "hyperagent",
+          "name": "binaries/hyperagent",
           "sidecar": true,
           "args": []
         }
@@ -22,7 +22,7 @@
       "identifier": "shell:allow-spawn",
       "allow": [
         {
-          "name": "hyperagent",
+          "name": "binaries/hyperagent",
           "sidecar": true,
           "args": []
         }
@@ -33,7 +33,7 @@
       "identifier": "shell:allow-stdin-write",
       "allow": [
         {
-          "name": "hyperagent",
+          "name": "binaries/hyperagent",
           "sidecar": true,
           "args": []
         }

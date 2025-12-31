@@ -11,6 +11,13 @@ type User struct {
 	Email        string    `gorm:"uniqueIndex;size:255;not null" json:"email"`
 	PasswordHash string    `gorm:"size:255;not null" json:"-"`
 	Balance      int64     `gorm:"not null;default:0" json:"balance"`
+	
+	// LLM Settings
+	LLMProvider  string    `gorm:"size:64;default:'TaskMaster'" json:"llmProvider"`
+	LLMModel     string    `gorm:"size:64;default:'auto'" json:"llmModel"`
+	LLMAPIKey    string    `gorm:"size:255" json:"llmApiKey"`
+	LLMBaseURL   string    `gorm:"size:255" json:"llmBaseUrl"`
+
 	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`
 }

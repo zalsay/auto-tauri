@@ -1,8 +1,10 @@
 import * as readline from 'readline';
-import { chromium } from 'playwright';
+import { chromium, Page } from 'playwright';
+import { HyperAgent } from "@hyperbrowser/agent";
 import { runScraperAndPublish } from './auto_agents';
 
-// Mock HyperAgent Sidecar
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
+
 async function main() {
   const rl = readline.createInterface({
     input: process.stdin,
@@ -10,106 +12,116 @@ async function main() {
     terminal: false
   });
 
-  log('Sidecar 已就绪。等待输入...');
+  log('Sidecar 已就绪。等待指令...');
 
   for await (const line of rl) {
     if (line.trim()) {
       try {
         const input = JSON.parse(line);
         await processTask(input);
-        // We only handle one task per invocation
         break; 
       } catch (e: any) {
-        log(`输入解析错误: ${e.message}`);
+        log(`指令解析错误: ${e.message}`);
         process.exit(1);
       }
     }
   }
 }
 
-async function processTask(input: any) {
-  log(`收到任务: ${input.taskId}`);
-  log(`类型: ${input.type || 'default'}`);
+function getLLMConfig(input: any) {
+    const llm = input.llm || {};
+    let provider = llm.provider || input.llmProvider || 'openai';
+    let apiKey = llm.apiKey || input.llmApiKey || OPENROUTER_API_KEY;
+    let model = llm.model || input.llmModel || 'google/gemini-2.0-flash-exp:free';
+    let baseURL = llm.baseURL || undefined;
 
-  if (input.type === 'xhs_automation' || input.type === 'scrape') {
-     await handleXHSAutomation(input);
+    if (!baseURL && (apiKey === OPENROUTER_API_KEY || (apiKey && model.includes('gemini')))) {
+        baseURL = 'https://openrouter.ai/api/v1';
+    }
+
+    return { provider, model, apiKey, baseURL };
+}
+
+async function processTask(input: any) {
+  const config = getLLMConfig(input);
+  
+  log(`收到任务: ${input.taskId}`);
+  log(`执行配置: Provider=${config.provider}, Model=${config.model}`);
+
+  if (input.type === 'xhs_automation') {
+     await handleXHSFlow(input, config);
   } else {
-     await handleDefaultMock(input);
+     await handleHyperAgent(input, config);
   }
 }
 
-async function handleXHSAutomation(input: any) {
-    log('正在启动浏览器进行网页获取...');
-    // We launch non-headless so the user can see/interact (especially for login)
-    const browser = await chromium.launch({ headless: false });
-    const context = await browser.newContext({
-        viewport: { width: 1280, height: 800 },
-        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+async function handleHyperAgent(input: any, config: any) {
+    log(`[HyperAgent] 正在初始化引擎...`);
+    
+    // 1. 初始化 Agent
+    const agent = new HyperAgent({
+        llm: {
+            provider: config.provider as any,
+            model: config.model,
+            apiKey: config.apiKey,
+            baseURL: config.baseURL
+        }
     });
 
     try {
-        const result = await runScraperAndPublish(context, input.url, input.prompt);
+        // 2. 获取页面实例
+        log(`[HyperAgent] 正在启动浏览器...`);
+        const page = await agent.getCurrentPage();
+
+        // 3. 如果提供了 URL，先导航
+        if (input.url) {
+            log(`[HyperAgent] 正在导航至: ${input.url}`);
+            await page.goto(input.url, { waitUntil: 'domcontentloaded' });
+        }
+
+        // 4. 执行任务指令
+        log(`[HyperAgent] 正在执行任务: ${input.prompt}`);
+        const result = await agent.executeTask(input.prompt);
+
+        log(`[HyperAgent] 任务完成。`);
+        
         console.log(JSON.stringify({
             taskId: input.taskId,
             status: 'success',
             data: result
         }));
+
     } catch (e: any) {
-        log(`自动化执行错误: ${e.message}`);
+        log(`[HyperAgent] 错误: ${e.message}`);
         console.log(JSON.stringify({
             taskId: input.taskId,
             status: 'failed',
             error: e.message
         }));
     } finally {
-        // Keep browser open for a bit if we want user to see it, otherwise close
-        // await browser.close();
-        log('自动化流程结束。');
-        // We exit process after a delay to allow stdout to flush? 
-        // Or we just let the parent kill us. 
-        // For the purpose of "leaving the window open", we might need to NOT exit immediately 
-        // if we want the user to click "Publish".
-        // But the Sidecar architecture usually expects a return.
-        // Let's close for now or wait a bit.
+        await agent.closeAgent();
+        log('Sidecar 执行结束。');
+    }
+}
+
+async function handleXHSFlow(input: any, config: any) {
+    log('启动浏览器...');
+    const browser = await chromium.launch({ headless: false });
+    const context = await browser.newContext();
+    try {
+        const result = await runScraperAndPublish(context, input.url, input.prompt);
+        console.log(JSON.stringify({ taskId: input.taskId, status: 'success', data: result }));
+    } catch (e: any) {
+        log(`错误: ${e.message}`);
+        console.log(JSON.stringify({ taskId: input.taskId, status: 'failed', error: e.message }));
+    } finally {
         await sleep(5000);
         await browser.close();
     }
 }
 
-async function handleDefaultMock(input: any) {
-  log(`目标 URL: ${input.url || 'N/A'}`);
-  log(`提示词: ${input.prompt}`);
-
-  // Mock processing
-  log('启动浏览器...');
-  await sleep(1000);
-  log('导航到页面...');
-  await sleep(1000);
-  log('提取数据...');
-  await sleep(1000);
-
-  // Result
-  const result = {
-    taskId: input.taskId,
-    status: 'success',
-    data: {
-      title: '模拟页面标题',
-      summary: '这是从页面提取的模拟结果。',
-      price: '$99.99'
-    }
-  };
-
-  // Output result as the last line
-  console.log(JSON.stringify(result));
-}
-
 function log(message: string) {
-  const event = {
-    type: 'log',
-    message: message,
-    timestamp: new Date().toISOString()
-  };
-  console.error(JSON.stringify(event));
+  console.error(JSON.stringify({ type: 'log', message, timestamp: new Date().toISOString() }));
 }
 
 function sleep(ms: number) {
@@ -120,5 +132,3 @@ main().catch(err => {
   console.error(JSON.stringify({ type: 'error', message: err.message }));
   process.exit(1);
 });
-
-

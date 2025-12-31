@@ -8,12 +8,20 @@ type User = {
   id: string;
   email: string;
   balance: number;
+  llmProvider: string;
+  llmModel: string;
+  llmApiKey: string;
+  llmBaseUrl: string;
 };
 
 type AuthResponseUser = {
   id: string;
   email: string;
   balance: number;
+  llmProvider: string;
+  llmModel: string;
+  llmApiKey: string;
+  llmBaseUrl: string;
 };
 
 type AuthResponse = {
@@ -73,6 +81,15 @@ function App() {
   const [projectType, setProjectType] = useState<"workflow" | "scrape">("workflow");
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
 
+  // Settings inputs
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [llmProvider, setLlmProvider] = useState("TaskMaster");
+  const [llmModel, setLlmModel] = useState("auto");
+  const [llmApiKey, setLlmApiKey] = useState("");
+  const [llmBaseUrl, setLlmBaseUrl] = useState("");
+
   // UI State
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [globalModal, setGlobalModal] = useState<GlobalModalConfig>({
@@ -118,6 +135,14 @@ function App() {
       if (token) {
           if (dashView === 'projects' || dashView === 'dashboard') loadProjects();
           if (dashView === 'tasks') loadTasks();
+          if (dashView === 'settings') {
+              if (user) {
+                  setLlmProvider(user.llmProvider || "TaskMaster");
+                  setLlmModel(user.llmModel || "auto");
+                  setLlmApiKey(user.llmApiKey || "");
+                  setLlmBaseUrl(user.llmBaseUrl || "");
+              }
+          }
       }
   }, [dashView, token]);
 
@@ -162,7 +187,15 @@ function App() {
           Authorization: "Bearer " + authToken,
         },
       })) as AuthResponseUser;
-      setUser({ id: data.id, email: data.email, balance: data.balance });
+      setUser({
+          id: data.id, 
+          email: data.email, 
+          balance: data.balance,
+          llmProvider: data.llmProvider,
+          llmModel: data.llmModel,
+          llmApiKey: data.llmApiKey,
+          llmBaseUrl: data.llmBaseUrl
+      });
       setView("main");
     } catch (e: any) {
       clearStoredToken();
@@ -207,7 +240,15 @@ function App() {
         clearStoredToken();
       }
       setToken(data.token);
-      setUser({ id: data.user.id, email: data.user.email, balance: data.user.balance });
+      setUser({
+          id: data.user.id, 
+          email: data.user.email, 
+          balance: data.user.balance,
+          llmProvider: data.user.llmProvider,
+          llmModel: data.user.llmModel,
+          llmApiKey: data.user.llmApiKey,
+          llmBaseUrl: data.user.llmBaseUrl
+      });
       setView("main");
     } catch (e: any) {
       setError("登录失败");
@@ -298,47 +339,75 @@ function App() {
       const data = (await apiRequest(`/api/v1/projects/${project.id}/execute`, {
         method: "POST",
         headers: { Authorization: "Bearer " + token },
-      })) as { task_id: string; project: Project; message: string };
+      })) as { taskId: string; project: Project; message: string };
       
       // Refresh balance
       const me = (await apiRequest("/api/v1/auth/me", {
         headers: { Authorization: "Bearer " + token },
       })) as AuthResponseUser;
-      setUser({ id: me.id, email: me.email, balance: me.balance });
+      setUser({
+          id: me.id, 
+          email: me.email, 
+          balance: me.balance,
+          llmProvider: me.llmProvider,
+          llmModel: me.llmModel,
+          llmApiKey: me.llmApiKey,
+          llmBaseUrl: me.llmBaseUrl
+      });
 
       // 2. Transition UI
-      setActiveTaskId(data.task_id);
+      setActiveTaskId(data.taskId);
       setDashView("task_detail");
       setTaskStatus("running");
-      setTaskLogs(logs => [...logs, `[System] 启动项目: ${project.name}`, `[System] 任务 ID: ${data.task_id}`, `[System] 正在启动引擎...`]);
+      setTaskLogs(logs => [...logs, `[System] 启动项目: ${project.name}`, `[System] 任务 ID: ${data.taskId}`, `[System] 正在启动引擎...`]);
 
-      // 3. Spawn Sidecar
-      const command = Command.sidecar("hyperagent");
+      // 3. Resolve Effective Config
+      let provider = user?.llmProvider || 'TaskMaster';
+      let model = user?.llmModel || 'auto';
+      let apiKey = user?.llmApiKey || '';
+      let baseURL = user?.llmBaseUrl || '';
+
+      if (provider === 'TaskMaster') {
+          provider = 'openai';
+          if (model === 'auto') {
+              model = 'google/gemini-2.0-flash-exp:free';
+          }
+          if (!baseURL) baseURL = 'https://openrouter.ai/api/v1';
+      }
+
+      // 4. Spawn Sidecar
+      const command = Command.sidecar("binaries/hyperagent");
       command.on('close', d => {
         const finalStatus = d.code === 0 ? "completed" : "failed";
         setTaskLogs(logs => [...logs, `[System] 执行结束，退出码: ${d.code}`]);
         setTaskStatus(finalStatus);
         setLoading(false);
-        updateTaskStatus(data.task_id, finalStatus);
+        updateTaskStatus(data.taskId, finalStatus);
       });
       command.on('error', err => {
         setTaskLogs(logs => [...logs, `[System] 错误: ${err}`]);
         setTaskStatus("failed");
         setLoading(false);
-        updateTaskStatus(data.task_id, "failed");
+        updateTaskStatus(data.taskId, "failed");
       });
       command.stdout.on('data', line => setTaskLogs(logs => [...logs, `[OUT] ${line}`]));
       command.stderr.on('data', line => setTaskLogs(logs => [...logs, `[LOG] ${line}`]));
 
       const child = await command.spawn();
       const payload = {
-          taskId: data.task_id,
+          taskId: data.taskId,
           type: project.type,
           prompt: project.prompt,
-          url: project.url
+          url: project.url,
+          llm: {
+              provider,
+              model,
+              apiKey,
+              baseURL
+          }
       };
       await child.write(JSON.stringify(payload) + "\n");
-      setTaskLogs(logs => [...logs, `[System] 指令已下发，浏览器处理中...`]);
+      setTaskLogs(logs => [...logs, `[System] 指令已下发，执行模型: ${model}`]);
 
     } catch (e: any) {
       showAlert("任务启动失败", e.message || "无法连接到执行引擎。");
@@ -359,6 +428,50 @@ function App() {
               showAlert("删除失败", "无法删除该记录。");
           }
       }, "确认删除", "bg-red-600");
+  }
+
+  async function handleChangePassword(e: React.FormEvent) {
+      e.preventDefault();
+      if (newPassword !== confirmPassword) {
+          showAlert("错误", "两次输入的新密码不一致。");
+          return;
+      }
+      setLoading(true);
+      try {
+          await apiRequest("/api/v1/users/change-password", {
+              method: "POST",
+              body: JSON.stringify({ oldPassword, newPassword }),
+              headers: { Authorization: "Bearer " + token },
+          });
+          setOldPassword("");
+          setNewPassword("");
+          setConfirmPassword("");
+          showAlert("修改成功", "您的密码已成功更新。");
+      } catch (e: any) {
+          showAlert("修改失败", e.data?.error === "invalid_old_password" ? "旧密码错误。" : "无法更新密码。");
+      } finally {
+          setLoading(false);
+      }
+  }
+
+  async function handleUpdateSettings(e: React.FormEvent) {
+      e.preventDefault();
+      setLoading(true);
+      try {
+          await apiRequest("/api/v1/users/settings", {
+              method: "PATCH",
+              body: JSON.stringify({ llmProvider, llmModel, llmApiKey, llmBaseUrl }),
+              headers: { Authorization: "Bearer " + token },
+          });
+          if (user) {
+              setUser({ ...user, llmProvider, llmModel, llmApiKey, llmBaseUrl });
+          }
+          showAlert("保存成功", "您的 AI 模型配置已更新。");
+      } catch (e) {
+          showAlert("保存失败", "无法更新设置。");
+      } finally {
+          setLoading(false);
+      }
   }
 
   function handleLogout() {
@@ -489,8 +602,8 @@ function App() {
                      <div className="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 transition-all hover:border-accent-blue/30">
                         <div className="flex items-center justify-between mb-2"><p className="text-sm font-medium text-slate-500 dark:text-slate-400">总余额</p><span className="material-symbols-outlined text-accent-blue">account_balance_wallet</span></div>
                         <p className="text-3xl font-bold mb-4">{user?.balance}</p>
-                        <form onSubmit={handleRecharge} className="flex gap-2">
-                           <input type="number" className="w-28 rounded-lg border p-2 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" value={rechargeAmount} onChange={(e) => setRechargeAmount(e.target.value)} placeholder="金额" />
+                        <form onSubmit={handleRecharge} className="flex items-center justify-between gap-3">
+                           <input type="number" className="flex-1 rounded-lg border p-2 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" value={rechargeAmount} onChange={(e) => setRechargeAmount(e.target.value)} placeholder="金额" />
                            <button type="submit" disabled={loading} className="bg-gradient-primary text-white px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap shrink-0">充值</button>
                         </form>
                      </div>
@@ -610,9 +723,118 @@ function App() {
              </div>
           )}
 
-          {(dashView === 'teams' || dashView === 'settings') && (
+          {dashView === 'settings' && (
+              <div className="mx-auto max-w-4xl flex flex-col gap-8">
+                  {/* Account Settings */}
+                  <div className="rounded-2xl bg-surface-light p-8 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800">
+                      <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+                          <span className="material-symbols-outlined text-accent-blue">lock</span>
+                          修改密码
+                      </h3>
+                      <form onSubmit={handleChangePassword} className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          <div className="md:col-span-2">
+                              <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">当前密码</label>
+                              <input 
+                                type="password" 
+                                className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-accent-blue/20"
+                                value={oldPassword} 
+                                onChange={(e) => setOldPassword(e.target.value)} 
+                                required 
+                              />
+                          </div>
+                          <div>
+                              <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">新密码</label>
+                              <input 
+                                type="password" 
+                                className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-accent-blue/20" 
+                                value={newPassword} 
+                                onChange={(e) => setNewPassword(e.target.value)} 
+                                required 
+                              />
+                          </div>
+                          <div>
+                              <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">确认新密码</label>
+                              <input 
+                                type="password" 
+                                className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-accent-blue/20" 
+                                value={confirmPassword} 
+                                onChange={(e) => setConfirmPassword(e.target.value)} 
+                                required 
+                              />
+                          </div>
+                          <div className="md:col-span-2 flex justify-end">
+                              <button type="submit" disabled={loading} className="bg-gradient-primary text-white px-8 py-2.5 rounded-xl text-sm font-bold shadow-lg hover:scale-[1.02] transition-transform">保存新密码</button>
+                          </div>
+                      </form>
+                  </div>
+
+                  {/* AI Settings */}
+                  <div className="rounded-2xl bg-surface-light p-8 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800">
+                      <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+                          <span className="material-symbols-outlined text-purple-500">smart_toy</span>
+                          AI 模型配置
+                      </h3>
+                      <form onSubmit={handleUpdateSettings} className="flex flex-col gap-6">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                              <div>
+                                  <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">模型服务商</label>
+                                  <select 
+                                    className="custom-select w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-accent-blue/20"
+                                    value={llmProvider}
+                                    onChange={(e) => setLlmProvider(e.target.value)}
+                                  >
+                                      <option value="TaskMaster">TaskMaster (强烈推荐)</option>
+                                      <option value="openai">OpenAI</option>
+                                      <option value="qwen">通义千问</option>
+                                      <option value="deepseek">DeepSeek</option>
+                                  </select>
+                              </div>
+                              <div>
+                                  <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">指定模型</label>
+                                  <input 
+                                    type="text" 
+                                    className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-accent-blue/20"
+                                    placeholder="例如：auto"
+                                    value={llmModel} 
+                                    onChange={(e) => setLlmModel(e.target.value)} 
+                                  />
+                              </div>
+                          </div>
+                          <div>
+                              <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">API 基准地址 (Base URL)</label>
+                              <input 
+                                type="url" 
+                                className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-accent-blue/20"
+                                placeholder="https://api.openai.com/v1"
+                                value={llmBaseUrl} 
+                                onChange={(e) => setLlmBaseUrl(e.target.value)} 
+                              />
+                          </div>
+                          <div>
+                              <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">API 密钥 (API Key)</label>
+                              <div className="relative">
+                                  <input 
+                                    type="password" 
+                                    className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-accent-blue/20 pr-10"
+                                    placeholder="sk-..."
+                                    value={llmApiKey} 
+                                    onChange={(e) => setLlmApiKey(e.target.value)} 
+                                  />
+                                  <span className="absolute right-3 top-1/2 -translate-y-1/2 material-symbols-outlined text-slate-400 pointer-events-none" style={{ fontSize: '20px' }}>key</span>
+                              </div>
+                              <p className="mt-2 text-xs text-slate-500">密钥将加密存储在服务器中，仅用于执行您的自动化任务。</p>
+                          </div>
+                          <div className="flex justify-end">
+                              <button type="submit" disabled={loading} className="bg-gradient-primary text-white px-8 py-2.5 rounded-xl text-sm font-bold shadow-lg hover:scale-[1.02] transition-transform">保存配置</button>
+                          </div>
+                      </form>
+                  </div>
+              </div>
+          )}
+
+          {dashView === 'teams' && (
              <div className="mx-auto max-w-7xl flex flex-col items-center justify-center min-h-[400px] gap-4">
-                 <div className="size-20 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400"><span className="material-symbols-outlined" style={{ fontSize: "48px" }}>{dashView === 'teams' ? 'group' : 'settings'}</span></div>
+                 <div className="size-20 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400"><span className="material-symbols-outlined" style={{ fontSize: "48px" }}>group</span></div>
                  <h2 className="text-2xl font-bold">{getPageTitle()}</h2>
                  <p className="text-slate-500 text-center max-w-md">此模块正在开发中，敬请期待。</p>
                  <button onClick={() => setDashView('dashboard')} className="mt-4 rounded-lg bg-slate-200 dark:bg-slate-800 px-6 py-2 text-sm font-medium text-slate-700 dark:text-slate-300">返回仪表盘</button>
@@ -642,7 +864,7 @@ function App() {
       {/* Global Alert/Confirm Modal */}
       {globalModal.isOpen && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-              <div className="w-full max-w-sm rounded-2xl bg-surface-light dark:bg-surface-dark p-6 shadow-2xl border border-slate-200 dark:border-slate-800 scale-100 animate-in zoom-in-95 duration-200">
+              <div className="w-full max-sm:max-w-xs max-w-sm rounded-2xl bg-surface-light dark:bg-surface-dark p-6 shadow-2xl border border-slate-200 dark:border-slate-800 scale-100 animate-in zoom-in-95 duration-200">
                   <div className="flex flex-col items-center text-center gap-4">
                       <div className={`size-12 rounded-full flex items-center justify-center ${globalModal.type === 'confirm' ? 'bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400' : 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'}`}>
                           <span className="material-symbols-outlined" style={{ fontSize: "28px" }}>
@@ -657,7 +879,7 @@ function App() {
                           {globalModal.type === 'confirm' && (
                               <button 
                                 onClick={closeModal}
-                                className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                                className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-sm font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
                               >
                                   取消
                               </button>

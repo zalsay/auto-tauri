@@ -50,6 +50,11 @@ func setupRouter() *gin.Engine {
 	authGroup.POST("/login", loginHandler)
 	authGroup.GET("/me", authMiddleware(), meHandler)
 
+	usersGroup := api.Group("/users")
+	usersGroup.Use(authMiddleware())
+	usersGroup.POST("/change-password", changePasswordHandler)
+	usersGroup.PATCH("/settings", updateUserSettingsHandler)
+
 	creditsGroup := api.Group("/credits")
 	creditsGroup.Use(authMiddleware())
 	creditsGroup.POST("/recharge", rechargeHandler)
