@@ -47,6 +47,7 @@ func main() {
 		auth.Use(authMiddleware())
 		{
 			auth.GET("/auth/me", meHandler)
+			auth.GET("/llm-config", getLLMConfigHandler)
 			auth.POST("/credits/recharge", rechargeHandler)
 			auth.POST("/users/change-password", changePasswordHandler)
 			auth.PATCH("/users/settings", updateUserSettingsHandler)

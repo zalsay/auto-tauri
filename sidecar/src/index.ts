@@ -37,8 +37,18 @@ function getLLMConfig(input: any) {
     let model = llm.model || input.llmModel || 'google/gemini-2.0-flash-exp:free';
     let baseURL = llm.baseURL || undefined;
 
+    // Map TaskMaster to openai compatible provider
+    if (provider === 'TaskMaster') {
+        provider = 'openai';
+    }
+
     if (!baseURL && (apiKey === OPENROUTER_API_KEY || (apiKey && model.includes('gemini')))) {
         baseURL = 'https://openrouter.ai/api/v1';
+    }
+
+    // Force openai provider for OpenRouter compatibility
+    if (baseURL && baseURL.includes('openrouter.ai')) {
+        provider = 'openai';
     }
 
     return { provider, model, apiKey, baseURL };
@@ -48,7 +58,8 @@ async function processTask(input: any) {
   const config = getLLMConfig(input);
   
   log(`收到任务: ${input.taskId}`);
-  log(`执行配置: Provider=${config.provider}, Model=${config.model}`);
+  const maskedApiKey = config.apiKey ? (config.apiKey.length > 8 ? `${config.apiKey.substring(0, 4)}...${config.apiKey.substring(config.apiKey.length - 4)}` : '****') : 'none';
+  log(`执行配置: Provider=${config.provider}, Model=${config.model}, BaseURL=${config.baseURL || 'default'}, APIKey=${maskedApiKey}`);
 
   if (input.type === 'xhs_automation') {
      await handleXHSFlow(input, config);

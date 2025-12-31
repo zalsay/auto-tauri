@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -196,7 +198,11 @@ func authMiddleware() gin.HandlerFunc {
 			return
 		}
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-		token, _ := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) { return jwtSecret, nil })
+		token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) { return jwtSecret, nil })
+		if err != nil || token == nil {
+			c.AbortWithStatus(401)
+			return
+		}
 		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
 			c.Set("userID", claims["sub"].(string))
 			c.Next()
@@ -209,15 +215,25 @@ func authMiddleware() gin.HandlerFunc {
 func rechargeHandler(c *gin.Context) {
 	userID := c.MustGet("userID").(string)
 	var req RechargeRequest
-	c.ShouldBindJSON(&req)
-	runWithUserLockAndTx(userID, func(tx *gorm.DB) error {
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		return
+	}
+	err := runWithUserLockAndTx(userID, func(tx *gorm.DB) error {
 		var user User
-		tx.Where("id = ?", userID).First(&user)
+		if err := tx.Where("id = ?", userID).First(&user).Error; err != nil {
+			return err
+		}
 		user.Balance += req.Amount
-		tx.Save(&user)
-		tx.Create(&Transaction{ID: uuid.NewString(), UserID: userID, Amount: req.Amount, Type: "recharge", Description: req.Description})
-		return nil
+		if err := tx.Save(&user).Error; err != nil {
+			return err
+		}
+		return tx.Create(&Transaction{ID: uuid.NewString(), UserID: userID, Amount: req.Amount, Type: "recharge", Description: req.Description}).Error
 	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_recharge"})
+		return
+	}
 	InvalidateUserCacheByID(userID)
 	var user User
 	globalDB.Where("id = ?", userID).First(&user)
@@ -366,13 +382,19 @@ func executeProjectHandler(c *gin.Context) {
 
 	err := runWithUserLockAndTx(userID, func(tx *gorm.DB) error {
 		var user User
-		tx.Where("id = ?", userID).First(&user)
+		if err := tx.Where("id = ?", userID).First(&user).Error; err != nil {
+			return err
+		}
 		if user.Balance < taskCost {
 			return errInsufficientBalance
 		}
 		user.Balance -= taskCost
-		tx.Save(&user)
-		tx.Create(&Transaction{ID: uuid.NewString(), UserID: userID, Amount: -taskCost, Type: "consume"})
+		if err := tx.Save(&user).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&Transaction{ID: uuid.NewString(), UserID: userID, Amount: -taskCost, Type: "consume"}).Error; err != nil {
+			return err
+		}
 
 		task := Task{
 			ID:        taskID,
@@ -474,13 +496,15 @@ func completeTaskHandler(c *gin.Context) {
 		finalBalance = user.Balance
 
 		// Record transaction
-		tx.Create(&Transaction{
+		if err := tx.Create(&Transaction{
 			ID:          uuid.NewString(),
 			UserID:      userID,
 			Amount:      -taskCost,
 			Type:        "consume",
-			Description: "Task " + taskID + " (" + string(rune(req.StepsCount)) + " steps)",
-		})
+			Description: fmt.Sprintf("Task %s (%d steps)", taskID, req.StepsCount),
+		}).Error; err != nil {
+			return err
+		}
 
 		// Update task
 		updates := map[string]interface{}{
@@ -510,4 +534,38 @@ func completeTaskHandler(c *gin.Context) {
 		"balance":    finalBalance,
 		"stepsCount": req.StepsCount,
 	})
+}
+
+func getLLMConfigHandler(c *gin.Context) {
+	// Default config
+	config := LLMConfig{
+		Provider: "TaskMaster",
+		Model:    "google/gemini-2.0-flash-exp:free",
+		BaseURL:  "https://openrouter.ai/api/v1",
+		APIKey:   "",
+	}
+
+	if redisClient != nil {
+		ctx := context.Background()
+		val, err := redisClient.Get(ctx, "system:llm_config").Result()
+		if err == nil {
+			var redisConfig LLMConfig
+			if err := json.Unmarshal([]byte(val), &redisConfig); err == nil {
+				if redisConfig.Provider != "" {
+					config.Provider = redisConfig.Provider
+				}
+				if redisConfig.Model != "" {
+					config.Model = redisConfig.Model
+				}
+				if redisConfig.APIKey != "" {
+					config.APIKey = redisConfig.APIKey
+				}
+				if redisConfig.BaseURL != "" {
+					config.BaseURL = redisConfig.BaseURL
+				}
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, config)
 }

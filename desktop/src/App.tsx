@@ -520,8 +520,19 @@ function App() {
             let baseURL = me.llmBaseUrl;
 
             if (me.llmProvider === 'TaskMaster') {
-                model = 'google/gemini-2.0-flash-exp:free';
-                baseURL = 'https://openrouter.ai/api/v1';
+                try {
+                    const systemConfig = await apiRequest("/api/v1/llm-config", {
+                        headers: { Authorization: "Bearer " + token },
+                    }) as any;
+                    
+                    if (systemConfig.llmModel) model = systemConfig.llmModel;
+                    if (systemConfig.llmBaseUrl) baseURL = systemConfig.llmBaseUrl;
+                    if (systemConfig.llmApiKey) apiKey = systemConfig.llmApiKey;
+                } catch (e) {
+                    console.error("Failed to fetch system config, using defaults", e);
+                    model = 'google/gemini-2.0-flash-exp:free';
+                    baseURL = 'https://openrouter.ai/api/v1';
+                }
             } else {
                 // Custom defaults if missing
                 if (!model) model = 'gpt-4o';
