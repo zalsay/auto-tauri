@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { apiRequest, clearStoredToken, getStoredToken, setStoredToken } from "./api";
+import { Command } from "@tauri-apps/plugin-shell";
 
 type View = "login" | "register" | "main";
 
@@ -20,6 +21,41 @@ type AuthResponse = {
   user: AuthResponseUser;
 };
 
+type TaskStatus = "pending" | "running" | "completed" | "failed";
+
+type DashView = "dashboard" | "task_detail" | "projects" | "tasks" | "teams" | "settings";
+
+interface Project {
+  id: string;
+  name: string;
+  url: string;
+  prompt: string;
+  type: string;
+  createdAt: string;
+}
+
+interface Task {
+  id: string;
+  projectId: string;
+  userId: string;
+  prompt: string;
+  type: string;
+  status: string;
+  cost: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface GlobalModalConfig {
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: "alert" | "confirm";
+    onConfirm?: () => void;
+    confirmText?: string;
+    confirmColor?: string;
+}
+
 function App() {
   const [view, setView] = useState<View>("login");
   const [email, setEmail] = useState("");
@@ -30,12 +66,36 @@ function App() {
   const [error, setError] = useState<string>("");
   const [rememberMe, setRememberMe] = useState(false);
   
-  // Dashboard inputs
+  // Project inputs
+  const [projectName, setProjectName] = useState("");
+  const [projectPrompt, setProjectPrompt] = useState("");
+  const [projectUrl, setProjectUrl] = useState("");
+  const [projectType, setProjectType] = useState<"workflow" | "scrape">("workflow");
+  const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
+
+  // UI State
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [globalModal, setGlobalModal] = useState<GlobalModalConfig>({
+      isOpen: false,
+      title: "",
+      message: "",
+      type: "alert"
+  });
+
+  // Recharge
   const [rechargeAmount, setRechargeAmount] = useState("100");
-  const [taskPrompt, setTaskPrompt] = useState("");
-  const [taskMessage, setTaskMessage] = useState("");
-  const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
-  const [taskType, setTaskType] = useState<"workflow" | "scrape">("workflow");
+  
+  // Execution State
+  const [dashView, setDashView] = useState<DashView>("dashboard");
+  const [activeTaskId, setActiveTaskId] = useState<string>("");
+  const [activeProject, setActiveProject] = useState<Project | null>(null);
+  const [taskStatus, setTaskStatus] = useState<TaskStatus>("pending");
+  const [taskLogs, setTaskLogs] = useState<string[]>([])
+  const logsEndRef = useRef<HTMLDivElement>(null);
+
+  // Lists
+  const [projectsList, setProjectsList] = useState<Project[]>([]);
+  const [tasksList, setTasksList] = useState<Task[]>([]);
 
   useEffect(() => {
     const storedToken = getStoredToken();
@@ -45,6 +105,53 @@ function App() {
     setToken(storedToken);
     loadMe(storedToken);
   }, []);
+
+  // Auto-scroll logs
+  useEffect(() => {
+    if (logsEndRef.current) {
+        logsEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [taskLogs]);
+
+  // Load lists
+  useEffect(() => {
+      if (token) {
+          if (dashView === 'projects' || dashView === 'dashboard') loadProjects();
+          if (dashView === 'tasks') loadTasks();
+      }
+  }, [dashView, token]);
+
+  // Modal Helpers
+  const showAlert = (title: string, message: string) => {
+      setGlobalModal({ isOpen: true, title, message, type: "alert" });
+  };
+
+  const showConfirm = (title: string, message: string, onConfirm: () => void, confirmText = "确定", confirmColor = "bg-blue-600") => {
+      setGlobalModal({ isOpen: true, title, message, type: "confirm", onConfirm, confirmText, confirmColor });
+  };
+
+  const closeModal = () => setGlobalModal(prev => ({ ...prev, isOpen: false }));
+
+  async function loadProjects() {
+      try {
+          const data = await apiRequest("/api/v1/projects", {
+              headers: { Authorization: "Bearer " + token },
+          });
+          setProjectsList(data as Project[]);
+      } catch (e) {}
+  }
+
+  async function loadTasks() {
+      setLoading(true);
+      try {
+          const data = await apiRequest("/api/v1/tasks", {
+              headers: { Authorization: "Bearer " + token },
+          });
+          setTasksList(data as Task[]);
+      } catch (e) {} finally {
+          setLoading(false);
+      }
+  }
 
   async function loadMe(authToken: string) {
     setLoading(true);
@@ -77,7 +184,7 @@ function App() {
         body: JSON.stringify({ email, password }),
       });
       setView("login");
-      setError("注册成功，请登录");
+      showAlert("注册成功", "请使用您的邮箱和密码登录。");
     } catch (e: any) {
       setError("注册失败");
     } finally {
@@ -113,7 +220,6 @@ function App() {
     e.preventDefault();
     if (!token || !user) return;
     setLoading(true);
-    setError("");
     try {
       const amountValue = parseInt(rechargeAmount, 10);
       const data = (await apiRequest("/api/v1/credits/recharge", {
@@ -123,38 +229,136 @@ function App() {
       })) as { balance: number };
       setUser({ ...user, balance: data.balance });
       setRechargeAmount("");
-      alert("充值成功！");
+      showAlert("充值成功", `您的余额已更新为 ${data.balance} 积分。`);
     } catch (e: any) {
-      setError("充值失败");
+      showAlert("充值失败", "无法完成充值请求，请稍后重试。");
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleStartTask(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleCreateProject(e: React.FormEvent) {
+      e.preventDefault();
+      setLoading(true);
+      try {
+          await apiRequest("/api/v1/projects", {
+              method: "POST",
+              body: JSON.stringify({ name: projectName, url: projectUrl, prompt: projectPrompt, type: projectType }),
+              headers: { Authorization: "Bearer " + token },
+          });
+          setIsProjectModalOpen(false);
+          setProjectName("");
+          setProjectUrl("");
+          setProjectPrompt("");
+          loadProjects();
+          showAlert("项目创建成功", "您现在可以启动该项目的自动化流程。");
+      } catch (e) {
+          showAlert("创建失败", "无法保存项目配置。");
+      } finally {
+          setLoading(false);
+      }
+  }
+
+  async function handleDeleteProject(id: string) {
+      showConfirm("确认删除项目", "删除项目将无法恢复，确定继续吗？", async () => {
+          try {
+              await apiRequest(`/api/v1/projects/${id}`, {
+                  method: "DELETE",
+                  headers: { Authorization: "Bearer " + token },
+              });
+              loadProjects();
+              closeModal();
+          } catch (e) {
+              showAlert("删除失败", "无法删除该项目。");
+          }
+      }, "立即删除", "bg-red-600");
+  }
+
+  async function updateTaskStatus(taskId: string, status: string) {
+      try {
+          await apiRequest(`/api/v1/tasks/${taskId}/status`, {
+              method: "PATCH",
+              body: JSON.stringify({ status }),
+              headers: { Authorization: "Bearer " + token },
+          });
+      } catch (e) {
+          console.error("Failed to sync task status to server", e);
+      }
+  }
+
+  async function handleExecuteProject(project: Project) {
     if (!token) return;
     setLoading(true);
-    setError("");
-    setTaskMessage("");
+    setTaskLogs([]);
+    setTaskStatus("pending");
+    setActiveProject(project);
+    
     try {
-      const data = (await apiRequest("/api/v1/tasks/start", {
+      // 1. Start execution on backend
+      const data = (await apiRequest(`/api/v1/projects/${project.id}/execute`, {
         method: "POST",
-        body: JSON.stringify({ prompt: taskPrompt, type: taskType }),
         headers: { Authorization: "Bearer " + token },
-      })) as { task_id: string; message: string };
-      setTaskMessage(data.message + " (任务ID: " + data.task_id + ")");
+      })) as { task_id: string; project: Project; message: string };
+      
       // Refresh balance
       const me = (await apiRequest("/api/v1/auth/me", {
         headers: { Authorization: "Bearer " + token },
       })) as AuthResponseUser;
       setUser({ id: me.id, email: me.email, balance: me.balance });
-      setTaskPrompt("");
+
+      // 2. Transition UI
+      setActiveTaskId(data.task_id);
+      setDashView("task_detail");
+      setTaskStatus("running");
+      setTaskLogs(logs => [...logs, `[System] 启动项目: ${project.name}`, `[System] 任务 ID: ${data.task_id}`, `[System] 正在启动引擎...`]);
+
+      // 3. Spawn Sidecar
+      const command = Command.sidecar("hyperagent");
+      command.on('close', d => {
+        const finalStatus = d.code === 0 ? "completed" : "failed";
+        setTaskLogs(logs => [...logs, `[System] 执行结束，退出码: ${d.code}`]);
+        setTaskStatus(finalStatus);
+        setLoading(false);
+        updateTaskStatus(data.task_id, finalStatus);
+      });
+      command.on('error', err => {
+        setTaskLogs(logs => [...logs, `[System] 错误: ${err}`]);
+        setTaskStatus("failed");
+        setLoading(false);
+        updateTaskStatus(data.task_id, "failed");
+      });
+      command.stdout.on('data', line => setTaskLogs(logs => [...logs, `[OUT] ${line}`]));
+      command.stderr.on('data', line => setTaskLogs(logs => [...logs, `[LOG] ${line}`]));
+
+      const child = await command.spawn();
+      const payload = {
+          taskId: data.task_id,
+          type: project.type,
+          prompt: project.prompt,
+          url: project.url
+      };
+      await child.write(JSON.stringify(payload) + "\n");
+      setTaskLogs(logs => [...logs, `[System] 指令已下发，浏览器处理中...`]);
+
     } catch (e: any) {
-      setError("启动任务失败");
-    } finally {
+      showAlert("任务启动失败", e.message || "无法连接到执行引擎。");
       setLoading(false);
     }
+  }
+
+  async function handleDeleteTask(taskId: string) {
+      showConfirm("确认删除记录", "删除任务执行历史记录，确定继续吗？", async () => {
+          try {
+              await apiRequest(`/api/v1/tasks/${taskId}`, {
+                  method: "DELETE",
+                  headers: { Authorization: "Bearer " + token },
+              });
+              loadTasks();
+              closeModal();
+          } catch (e) {
+              showAlert("删除失败", "无法删除该记录。");
+          }
+      }, "确认删除", "bg-red-600");
   }
 
   function handleLogout() {
@@ -162,9 +366,45 @@ function App() {
     setToken("");
     setUser(null);
     setView("login");
+    setDashView("dashboard");
+    setIsMobileMenuOpen(false);
   }
 
-  // Auth Layout (Login/Register)
+  const getPageTitle = () => {
+      switch (dashView) {
+          case 'dashboard': return '仪表盘';
+          case 'task_detail': return '执行详情';
+          case 'projects': return '项目管理';
+          case 'tasks': return '任务历史';
+          case 'teams': return '团队协作';
+          case 'settings': return '系统设置';
+          default: return '任务大师';
+      }
+  };
+
+  const SidebarContent = () => (
+    <>
+      <div className="flex h-16 items-center gap-3 px-6 border-b border-slate-200 dark:border-slate-800">
+        <div className="size-8 rounded bg-gradient-primary flex items-center justify-center text-white shadow-md shadow-blue-600/20">
+          <span className="material-symbols-outlined" style={{ fontSize: "20px" }}>check_circle</span>
+        </div>
+        <h1 className="text-lg font-bold bg-gradient-to-r from-blue-700 to-purple-700 dark:from-blue-500 dark:to-purple-500 bg-clip-text text-transparent">任务大师</h1>
+      </div>
+      <nav className="flex-1 overflow-y-auto px-4 py-6">
+        <ul className="flex flex-col gap-2">
+          <li><button onClick={() => { setDashView('dashboard'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'dashboard' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">dashboard</span><span className="text-sm font-medium">仪表盘</span></button></li>
+          <li><button onClick={() => { setDashView('projects'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'projects' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">view_kanban</span><span className="text-sm font-medium">项目管理</span></button></li>
+          <li><button onClick={() => { setDashView('tasks'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'tasks' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">history</span><span className="text-sm font-medium">任务历史</span></button></li>
+          <li><button onClick={() => { setDashView('teams'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'teams' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">group</span><span className="text-sm font-medium">团队协作</span></button></li>
+          <li><button onClick={() => { setDashView('settings'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors group text-left ${dashView === 'settings' ? 'bg-gradient-primary shadow-lg shadow-purple-600/20 text-white' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className={`material-symbols-outlined ${dashView === 'settings' ? 'fill' : 'group-hover:text-accent-blue'}`}>settings</span><span className="text-sm font-medium">设置</span></button></li>
+        </ul>
+      </nav>
+      <div className="p-4 border-t border-slate-200 dark:border-slate-800">
+         <button onClick={handleLogout} className="flex w-full items-center gap-3 rounded-lg p-2 text-slate-500 hover:text-red-500 transition-colors"><span className="material-symbols-outlined">logout</span><span className="text-sm font-medium">退出登录</span></button>
+      </div>
+    </>
+  );
+
   if (view === "login" || view === "register") {
     const isLogin = view === "login";
     return (
@@ -174,329 +414,264 @@ function App() {
              <div className="size-10 rounded bg-gradient-primary flex items-center justify-center text-white shadow-md shadow-blue-600/20">
                 <span className="material-symbols-outlined" style={{ fontSize: "24px" }}>check_circle</span>
              </div>
-             <h1 className="text-2xl font-bold tracking-tight bg-gradient-to-r from-blue-700 to-purple-700 dark:from-blue-500 dark:to-purple-500 bg-clip-text text-transparent">
-               任务大师
-             </h1>
+             <h1 className="text-2xl font-bold tracking-tight bg-gradient-to-r from-blue-700 to-purple-700 dark:from-blue-500 dark:to-purple-500 bg-clip-text text-transparent">任务大师</h1>
           </div>
-          <h2 className="mb-6 text-xl font-bold text-slate-900 dark:text-white text-center">
-            {isLogin ? "欢迎回来" : "创建账户"}
-          </h2>
-          
-          {error && (
-            <div className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-500 dark:bg-red-900/20 dark:text-red-400">
-              {error}
-            </div>
-          )}
-
+          <h2 className="mb-6 text-xl font-bold text-slate-900 dark:text-white text-center">{isLogin ? "欢迎回来" : "创建账户"}</h2>
+          {error && <div className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-500 dark:bg-red-900/20 dark:text-red-400">{error}</div>}
           <form onSubmit={isLogin ? handleLogin : handleRegister} className="flex flex-col gap-4">
             <div>
               <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">邮箱</label>
-              <input
-                type="email"
-                className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm text-slate-900 placeholder:text-[#d1d5db] focus:border-accent-blue focus:ring-accent-blue dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-[#9ca3af]"
-                placeholder="请输入邮箱"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
+              <input type="email" className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm text-slate-900 focus:ring-accent-blue dark:border-slate-700 dark:bg-slate-800 dark:text-white" value={email} onChange={(e) => setEmail(e.target.value)} required />
             </div>
             <div>
               <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">密码</label>
-              <input
-                type="password"
-                className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm text-slate-900 placeholder:text-[#d1d5db] focus:border-accent-blue focus:ring-accent-blue dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-[#9ca3af]"
-                placeholder="请输入密码"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
+              <input type="password" className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm text-slate-900 focus:ring-accent-blue dark:border-slate-700 dark:bg-slate-800 dark:text-white" value={password} onChange={(e) => setPassword(e.target.value)} required />
             </div>
-            
             {isLogin && (
               <div className="flex items-center">
-                <input
-                  id="remember-me"
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 dark:border-slate-600 dark:bg-slate-700 dark:ring-offset-slate-800"
-                />
-                <label htmlFor="remember-me" className="ml-2 block text-sm text-slate-900 dark:text-slate-300 select-none cursor-pointer">
-                  自动登录
-                </label>
+                <input id="remember-me" type="checkbox" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} className="h-4 w-4 rounded text-blue-600 focus:ring-blue-500" />
+                <label htmlFor="remember-me" className="ml-2 block text-sm text-slate-900 dark:text-slate-300 select-none cursor-pointer">自动登录</label>
               </div>
             )}
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="mt-2 w-full rounded-lg bg-gradient-primary px-5 py-2.5 text-center text-sm font-medium text-white hover:bg-gradient-hover focus:outline-none focus:ring-4 focus:ring-blue-300 dark:focus:ring-blue-800 disabled:opacity-50 transition-all shadow-lg shadow-purple-600/30 hover:shadow-purple-600/40"
-            >
-              {loading ? "处理中..." : (isLogin ? "登录" : "注册")}
-            </button>
+            <button type="submit" disabled={loading} className="mt-2 w-full rounded-lg bg-gradient-primary px-5 py-2.5 text-center text-sm font-medium text-white hover:shadow-purple-600/40">{loading ? "处理中..." : (isLogin ? "登录" : "注册")}</button>
           </form>
-
           <div className="mt-6 text-center text-sm">
-            <span className="text-slate-500 dark:text-slate-400">
-              {isLogin ? "还没有账号？" : "已有账号？"}
-            </span>
-            <button
-              onClick={() => setView(isLogin ? "register" : "login")}
-              className="font-medium text-accent-blue hover:underline dark:text-blue-500"
-            >
-              {isLogin ? "注册" : "登录"}
-            </button>
+            <span className="text-slate-500 dark:text-slate-400">{isLogin ? "还没有账号？" : "已有账号？"}</span>
+            <button onClick={() => setView(isLogin ? "register" : "login")} className="font-medium text-accent-blue hover:underline dark:text-blue-500 ml-1">{isLogin ? "注册" : "登录"}</button>
           </div>
         </div>
       </div>
     );
   }
 
-  // Main Dashboard Layout
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background-light dark:bg-background-dark text-slate-900 dark:text-white font-display">
-      {/* Sidebar */}
+      {/* Desktop Sidebar */}
       <aside className="hidden w-64 flex-col border-r border-slate-200 dark:border-slate-800 bg-surface-light dark:bg-background-dark lg:flex">
-        <div className="flex h-16 items-center gap-3 px-6 border-b border-slate-200 dark:border-slate-800">
-          <div className="size-8 rounded bg-gradient-primary flex items-center justify-center text-white shadow-md shadow-blue-600/20">
-            <span className="material-symbols-outlined" style={{ fontSize: "20px" }}>check_circle</span>
-          </div>
-          <h1 className="text-lg font-bold tracking-tight bg-gradient-to-r from-blue-700 to-purple-700 dark:from-blue-500 dark:to-purple-500 bg-clip-text text-transparent">
-            任务大师
-          </h1>
-        </div>
-        <nav className="flex-1 overflow-y-auto px-4 py-6">
-          <ul className="flex flex-col gap-2">
-            <li>
-              <a href="#" className="flex items-center gap-3 rounded-lg bg-gradient-primary shadow-lg shadow-purple-600/20 px-3 py-2 text-white">
-                <span className="material-symbols-outlined fill">dashboard</span>
-                <span className="text-sm font-medium">仪表盘</span>
-              </a>
-            </li>
-            <li>
-              <a href="#" className="flex items-center gap-3 rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50 transition-colors group">
-                <span className="material-symbols-outlined group-hover:text-accent-blue transition-colors">view_kanban</span>
-                <span className="text-sm font-medium">项目</span>
-              </a>
-            </li>
-            <li>
-              <a href="#" className="flex items-center gap-3 rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50 transition-colors group">
-                <span className="material-symbols-outlined group-hover:text-accent-blue transition-colors">check_box</span>
-                <span className="text-sm font-medium">任务</span>
-              </a>
-            </li>
-            <li>
-              <a href="#" className="flex items-center gap-3 rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50 transition-colors group">
-                <span className="material-symbols-outlined group-hover:text-accent-blue transition-colors">group</span>
-                <span className="text-sm font-medium">团队</span>
-              </a>
-            </li>
-            <li>
-              <a href="#" className="flex items-center gap-3 rounded-lg px-3 py-2 text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50 transition-colors group">
-                <span className="material-symbols-outlined group-hover:text-accent-blue transition-colors">settings</span>
-                <span className="text-sm font-medium">设置</span>
-              </a>
-            </li>
-          </ul>
-        </nav>
-        <div className="p-4 border-t border-slate-200 dark:border-slate-800">
-           <button onClick={handleLogout} className="flex w-full items-center gap-3 rounded-lg p-2 hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer transition-colors text-slate-500 dark:text-slate-400 hover:text-red-500 dark:hover:text-red-400">
-             <span className="material-symbols-outlined">logout</span>
-             <span className="text-sm font-medium">退出登录</span>
-           </button>
-        </div>
+        <SidebarContent />
       </aside>
 
-      {/* Main Content */}
+      {/* Mobile Sidebar Overlay */}
+      {isMobileMenuOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden flex">
+           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => setIsMobileMenuOpen(false)}></div>
+           <aside className="relative w-64 h-full bg-surface-light dark:bg-background-dark shadow-2xl flex flex-col animate-in slide-in-from-left duration-300">
+              <div className="absolute top-4 right-4 lg:hidden">
+                 <button onClick={() => setIsMobileMenuOpen(false)} className="p-1 text-slate-500"><span className="material-symbols-outlined">close</span></button>
+              </div>
+              <SidebarContent />
+           </aside>
+        </div>
+      )}
+
       <main className="flex flex-1 flex-col overflow-hidden relative">
         <header className="flex h-16 items-center justify-between border-b border-slate-200 dark:border-slate-800 bg-surface-light dark:bg-background-dark px-6 lg:px-10 z-10">
-          <button className="mr-4 lg:hidden text-slate-500 dark:text-white">
-            <span className="material-symbols-outlined">menu</span>
-          </button>
-          <div className="flex flex-1 max-w-lg">
-             <div className="relative w-full group">
-               <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400 group-focus-within:text-accent-blue transition-colors">
-                <span className="material-symbols-outlined" style={{ fontSize: "20px" }}>search</span>
-              </div>
-              <input className="block w-full rounded-lg border-none bg-slate-50 py-2 pl-10 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:ring-2 focus:ring-accent-purple/50 dark:bg-surface-dark dark:text-white dark:placeholder:text-slate-500 transition-all" placeholder="搜索任务、项目..." type="text"/>
-            </div>
-         </div>
-         <div className="ml-4 flex items-center gap-4">
-            <div className="flex items-center gap-2">
-               <span className="text-sm font-medium text-slate-700 dark:text-slate-300 hidden sm:block">{user?.email}</span>
-               <div className="size-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-bold text-xs">
-                 {user?.email.substring(0, 2).toUpperCase()}
+          <div className="flex items-center gap-2">
+             <button onClick={() => setIsMobileMenuOpen(true)} className="p-1 -ml-1 mr-2 rounded-md lg:hidden text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition-colors">
+                <span className="material-symbols-outlined">menu</span>
+             </button>
+             {dashView !== 'dashboard' && <button onClick={() => setDashView('dashboard')} className="p-1 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400"><span className="material-symbols-outlined">arrow_back</span></button>}
+             <span className="text-lg font-bold text-slate-900 dark:text-white">{getPageTitle()}</span>
+          </div>
+          <div className="flex items-center gap-4">
+             <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-slate-700 dark:text-slate-300 hidden sm:block">{user?.email}</span>
+                <div className="size-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-bold text-xs">{user?.email.substring(0, 2).toUpperCase()}</div>
+             </div>
+          </div>
+        </header>
+
+        <div className="flex-1 overflow-y-auto p-6 lg:p-10 scroll-smooth bg-slate-50 dark:bg-[#0b1120]">
+          {dashView === 'dashboard' && (
+            <div className="mx-auto max-w-7xl flex flex-col gap-8">
+               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  <div className="lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                     <div className="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 transition-all hover:border-accent-blue/30">
+                        <div className="flex items-center justify-between mb-2"><p className="text-sm font-medium text-slate-500 dark:text-slate-400">总余额</p><span className="material-symbols-outlined text-accent-blue">account_balance_wallet</span></div>
+                        <p className="text-3xl font-bold mb-4">{user?.balance}</p>
+                        <form onSubmit={handleRecharge} className="flex gap-2">
+                           <input type="number" className="w-28 rounded-lg border p-2 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" value={rechargeAmount} onChange={(e) => setRechargeAmount(e.target.value)} placeholder="金额" />
+                           <button type="submit" disabled={loading} className="bg-gradient-primary text-white px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap shrink-0">充值</button>
+                        </form>
+                     </div>
+                     <div className="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 transition-all hover:border-accent-blue/30">
+                        <div className="flex items-center justify-between mb-2"><p className="text-sm font-medium text-slate-500 dark:text-slate-400">已定义项目</p><span className="material-symbols-outlined text-purple-500">task_alt</span></div>
+                        <p className="text-3xl font-bold">{projectsList.length}</p>
+                        <p className="text-sm text-slate-500">当前已定义工作流</p>
+                     </div>
+                  </div>
+                  <div className="lg:col-span-1">
+                     <button onClick={() => setIsProjectModalOpen(true)} className="w-full h-full min-h-[160px] rounded-xl bg-surface-light dark:bg-surface-dark border-2 border-dashed border-slate-300 dark:border-slate-700 flex flex-col items-center justify-center gap-3 hover:border-accent-blue transition-all group">
+                        <div className="size-12 rounded-full bg-gradient-primary flex items-center justify-center text-white shadow-lg group-hover:scale-110 transition-transform"><span className="material-symbols-outlined" style={{ fontSize: "28px" }}>add</span></div>
+                        <span className="text-lg font-bold text-slate-700 dark:text-slate-300 group-hover:text-accent-blue">新建项目</span>
+                     </button>
+                  </div>
+               </div>
+               
+               <div className="flex flex-col gap-4">
+                  <h3 className="text-xl font-bold flex items-center gap-2"><span className="material-symbols-outlined text-accent-blue">quick_reference</span>最近项目</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                     {projectsList.slice(0, 6).map(p => (
+                        <div key={p.id} className="rounded-xl bg-surface-light p-5 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 flex flex-col gap-3">
+                           <div className="flex justify-between items-start">
+                              <h4 className="font-bold text-slate-900 dark:text-white truncate">{p.name}</h4>
+                              <span className="px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-[10px] text-slate-500">{p.type}</span>
+                           </div>
+                           <p className="text-xs text-slate-500 line-clamp-2 h-8">{p.prompt}</p>
+                           <div className="flex gap-2 mt-2">
+                              <button onClick={() => handleExecuteProject(p)} className="flex-1 bg-blue-50 dark:bg-blue-900/20 text-accent-blue px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-100 transition-colors">执行</button>
+                              <button onClick={() => { setActiveProject(p); setDashView('projects'); }} className="px-3 py-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold transition-colors">管理</button>
+                           </div>
+                        </div>
+                     ))}
+                  </div>
                </div>
             </div>
-         </div>
-       </header>
+          )}
 
-       <div className="flex-1 overflow-y-auto p-6 lg:p-10 scroll-smooth">
-         <div className="mx-auto max-w-7xl flex flex-col gap-8">
-           
-           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-             {/* Left Column: Stats */}
-             <div className="lg:col-span-2 flex flex-col gap-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                   {/* Balance Card with Recharge */}
-                   <div className="flex flex-col gap-4 rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 hover:border-accent-blue/30 dark:hover:border-accent-blue/30 transition-all">
-                     <div className="flex items-center justify-between">
-                       <p className="text-sm font-medium text-slate-500 dark:text-slate-400">总余额</p>
-                       <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-light text-accent-blue">
-                         <span className="material-symbols-outlined" style={{ fontSize: "20px" }}>account_balance_wallet</span>
-                       </div>
-                     </div>
-                     <div>
-                        <p className="text-3xl font-bold text-slate-900 dark:text-white">{user?.balance}</p>
-                        <p className="text-sm font-medium text-emerald-500">可用积分</p>
-                     </div>
-                     {/* Recharge Form */}
-                     <form onSubmit={handleRecharge} className="mt-2 flex items-center gap-2">
-                        <input
-                          type="number"
-                          className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2 text-sm text-slate-900 focus:border-accent-blue focus:ring-accent-blue dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                          value={rechargeAmount}
-                          onChange={(e) => setRechargeAmount(e.target.value)}
-                          min="1"
-                          placeholder="金额"
-                        />
-                        <button
-                          type="submit"
-                          disabled={loading}
-                          className="whitespace-nowrap rounded-lg bg-gradient-primary px-4 py-2 text-center text-sm font-medium text-white hover:bg-gradient-hover transition-all shadow-lg shadow-purple-600/20"
-                        >
-                          充值
-                        </button>
-                     </form>
-                   </div>
-                   
-                   {/* Active Tasks Card */}
-                   <div className="flex flex-col gap-2 rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 hover:border-accent-blue/30 dark:hover:border-accent-blue/30 transition-all">
-                      <div className="flex items-center justify-between">
-                        <p className="text-sm font-medium text-slate-500 dark:text-slate-400">进行中的任务</p>
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-500/10 text-orange-500">
-                          <span className="material-symbols-outlined" style={{ fontSize: "20px" }}>hourglass_empty</span>
-                        </div>
+          {dashView === 'projects' && (
+             <div className="mx-auto max-w-7xl flex flex-col gap-6">
+                <div className="flex justify-between items-center">
+                   <h3 className="text-xl font-bold">项目列表</h3>
+                   <button onClick={() => setIsProjectModalOpen(true)} className="bg-gradient-primary text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>add</span>新建项目</button>
+                </div>
+                <div className="grid grid-cols-1 gap-4">
+                   {projectsList.length === 0 ? <div className="text-center py-20 text-slate-500 bg-surface-light dark:bg-surface-dark rounded-xl border border-dashed border-slate-300 dark:border-slate-700">尚未创建项目</div> : projectsList.map(p => (
+                      <div key={p.id} className="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                         <div className="flex-1">
+                            <div className="flex items-center gap-3 mb-1"><h4 className="text-lg font-bold text-slate-900 dark:text-white">{p.name}</h4><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${p.type === 'workflow' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{p.type}</span></div>
+                            <p className="text-sm text-slate-500 line-clamp-1">{p.url || '无起始 URL'} | {p.prompt}</p>
+                         </div>
+                         <div className="flex gap-3">
+                            <button onClick={() => handleExecuteProject(p)} className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-blue-700 transition-colors shadow-sm"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>play_arrow</span>启动</button>
+                            <button onClick={() => handleDeleteProject(p.id)} className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"><span className="material-symbols-outlined">delete</span></button>
+                         </div>
                       </div>
-                      <p className="text-3xl font-bold text-slate-900 dark:text-white">0</p>
-                      <p className="text-sm font-medium text-slate-500">无进行中的任务</p>
-                   </div>
+                   ))}
                 </div>
              </div>
+          )}
 
-             {/* Right Column: Start Task Button */}
-             <div className="lg:col-span-1">
-               <div className="h-full flex items-start justify-center lg:justify-end">
-                  <button 
-                    onClick={() => { setTaskMessage(""); setError(""); setIsTaskModalOpen(true); }}
-                    className="flex flex-col items-center justify-center gap-3 w-full h-full min-h-[160px] rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-dashed border-slate-300 dark:border-slate-700 hover:border-accent-blue hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-all group cursor-pointer"
-                  >
-                     <div className="size-12 rounded-full bg-gradient-primary flex items-center justify-center text-white shadow-lg shadow-purple-600/20 group-hover:scale-110 transition-transform">
-                        <span className="material-symbols-outlined" style={{ fontSize: "28px" }}>add</span>
-                     </div>
-                     <span className="text-lg font-bold text-slate-700 dark:text-slate-300 group-hover:text-accent-blue transition-colors">开始新任务</span>
-                  </button>
-               </div>
+          {dashView === 'task_detail' && (
+             <div className="mx-auto max-w-7xl h-full flex flex-col gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800">
+                         <h3 className="text-lg font-bold mb-4 flex items-center gap-2"><span className="material-symbols-outlined text-accent-blue">info</span>任务信息</h3>
+                         <div className="flex flex-col gap-4 text-sm">
+                             <div className="flex flex-col gap-1"><span className="text-slate-500 dark:text-slate-400">所属项目</span><span className="font-bold text-slate-900 dark:text-white">{activeProject?.name}</span></div>
+                             <div className="flex flex-col gap-1"><span className="text-slate-500 dark:text-slate-400">任务 ID</span><span className="font-mono text-xs bg-slate-100 dark:bg-slate-800 p-1.5 rounded text-slate-900 dark:text-white">{activeTaskId}</span></div>
+                             <div className="flex flex-col gap-1"><span className="text-slate-500 dark:text-slate-400">任务指令</span><p className="bg-slate-50 dark:bg-slate-800 p-2 rounded-lg border border-slate-200 dark:border-slate-700 whitespace-pre-wrap text-slate-900 dark:text-white">{activeProject?.prompt}</p></div>
+                         </div>
+                    </div>
+                    <div className="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 flex flex-col">
+                        <h3 className="text-lg font-bold mb-4 flex items-center gap-2"><span className="material-symbols-outlined text-orange-500">pending_actions</span>执行状态</h3>
+                         <div className="flex-1 flex items-center justify-center flex-col gap-3">
+                            {taskStatus === 'running' && <><div className="size-12 rounded-full border-4 border-slate-200 border-t-accent-blue animate-spin"></div><p className="text-slate-500">任务正在执行中...</p></>}
+                            {taskStatus === 'completed' && <><div className="size-12 rounded-full bg-green-100 dark:bg-green-900/30 text-green-600 flex items-center justify-center"><span className="material-symbols-outlined" style={{ fontSize: "32px" }}>check</span></div><p className="text-green-600 font-bold">任务执行完成</p></>}
+                            {taskStatus === 'failed' && <><div className="size-12 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 flex items-center justify-center"><span className="material-symbols-outlined" style={{ fontSize: "32px" }}>error</span></div><p className="text-red-600 font-bold">任务执行失败</p></>}
+                         </div>
+                    </div>
+                </div>
+                <div className="flex-1 rounded-xl bg-[#1e1e1e] shadow-sm border border-slate-800 flex flex-col overflow-hidden min-h-[300px]">
+                    <div className="flex items-center justify-between px-4 py-2 bg-[#252526] border-b border-[#333]"><div className="flex items-center gap-2 text-slate-300 text-xs font-medium uppercase tracking-wider"><span className="material-symbols-outlined" style={{ fontSize: "16px" }}>terminal</span>实时日志</div><div className="flex items-center gap-2"><span className={`size-2 rounded-full ${taskStatus === 'running' ? 'bg-green-500 animate-pulse' : 'bg-slate-500'}`}></span><span className="text-xs text-slate-400">{taskStatus === 'running' ? 'Live' : 'Stopped'}</span></div></div>
+                    <div className="flex-1 overflow-y-auto p-4 font-mono text-[11px] text-slate-300 leading-relaxed scroll-smooth">{taskLogs.length === 0 && <span className="text-slate-500 italic">Waiting for logs...</span>}{taskLogs.map((log, i) => (<div key={i} className="mb-1 break-words whitespace-pre-wrap">{log}</div>))}<div ref={logsEndRef} /></div>
+                </div>
              </div>
-           </div>
-          </div>
+          )}
+
+          {dashView === 'tasks' && (
+             <div className="mx-auto max-w-7xl flex flex-col gap-6">
+                 <div className="flex justify-end"><button onClick={loadTasks} className="flex items-center gap-2 rounded-lg bg-surface-light px-3 py-2 text-sm font-medium border border-slate-200 dark:border-slate-800 dark:bg-surface-dark transition-colors hover:bg-slate-50 text-slate-900 dark:text-white"><span className={`material-symbols-outlined ${loading ? 'animate-spin' : ''}`} style={{ fontSize: "20px" }}>refresh</span>刷新</button></div>
+                 <div className="rounded-xl bg-surface-light shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 overflow-hidden">
+                     <table className="w-full text-left text-sm text-slate-500">
+                         <thead className="bg-slate-50 text-xs uppercase text-slate-700 dark:bg-slate-800 dark:text-slate-400"><tr><th className="px-6 py-3">类型</th><th className="px-6 py-3">Prompt</th><th className="px-6 py-3">状态</th><th className="px-6 py-3">消耗</th><th className="px-6 py-3">创建时间</th><th className="px-6 py-3 text-right">操作</th></tr></thead>
+                         <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                             {tasksList.map((task) => (
+                                 <tr key={task.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                                     <td className="px-6 py-4"><span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${task.type === 'workflow' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'}`}>{task.type === 'workflow' ? '工作流' : '抓取'}</span></td>
+                                     <td className="px-6 py-4 max-w-xs truncate text-slate-900 dark:text-white" title={task.prompt}>{task.prompt}</td>
+                                     <td className="px-6 py-4">
+                                         {task.status === 'running' && <span className="text-blue-600 flex items-center gap-1"><span className="size-1.5 rounded-full bg-blue-500 animate-pulse"></span>运行中</span>}
+                                         {task.status === 'completed' && <span className="text-green-600 flex items-center gap-1">完成</span>}
+                                         {task.status === 'failed' && <span className="text-red-600 flex items-center gap-1">失败</span>}
+                                     </td>
+                                     <td className="px-6 py-4 font-medium text-slate-900 dark:text-white">{Math.abs(task.cost)}</td>
+                                     <td className="px-6 py-4 text-xs text-slate-500">{new Date(task.createdAt).toLocaleString()}</td>
+                                     <td className="px-6 py-4 text-right">
+                                         <button onClick={() => handleDeleteTask(task.id)} className="p-1.5 rounded-md text-slate-400 hover:text-red-500 transition-colors" title="删除记录">
+                                             <span className="material-symbols-outlined" style={{ fontSize: "18px" }}>delete</span>
+                                         </button>
+                                     </td>
+                                 </tr>
+                             ))}
+                         </tbody>
+                     </table>
+                 </div>
+             </div>
+          )}
+
+          {(dashView === 'teams' || dashView === 'settings') && (
+             <div className="mx-auto max-w-7xl flex flex-col items-center justify-center min-h-[400px] gap-4">
+                 <div className="size-20 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400"><span className="material-symbols-outlined" style={{ fontSize: "48px" }}>{dashView === 'teams' ? 'group' : 'settings'}</span></div>
+                 <h2 className="text-2xl font-bold">{getPageTitle()}</h2>
+                 <p className="text-slate-500 text-center max-w-md">此模块正在开发中，敬请期待。</p>
+                 <button onClick={() => setDashView('dashboard')} className="mt-4 rounded-lg bg-slate-200 dark:bg-slate-800 px-6 py-2 text-sm font-medium text-slate-700 dark:text-slate-300">返回仪表盘</button>
+             </div>
+          )}
         </div>
       </main>
 
-      {/* Task Modal */}
-      {isTaskModalOpen && (
+      {/* Project Modal */}
+      {isProjectModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-           <div className="w-full max-w-lg rounded-xl bg-surface-light dark:bg-surface-dark p-6 shadow-2xl border border-slate-200 dark:border-slate-800 scale-100 animate-in zoom-in-95 duration-200">
-              <div className="mb-6 flex items-center justify-between">
-                 <h3 className="text-xl font-bold text-slate-900 dark:text-white">开始新任务</h3>
-                 <button 
-                   onClick={() => setIsTaskModalOpen(false)}
-                   className="rounded-full p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
-                 >
-                   <span className="material-symbols-outlined">close</span>
-                 </button>
-              </div>
-              
-              <form onSubmit={handleStartTask} className="flex flex-col gap-4">
-                 <div className="flex flex-col gap-2">
-                   <label className="text-sm font-medium text-slate-700 dark:text-slate-300">任务类型</label>
-                   <div className="flex gap-4">
-                     <label className={`flex flex-1 cursor-pointer items-center gap-3 rounded-lg border p-3 transition-all ${taskType === 'workflow' ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20 dark:border-blue-500' : 'border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800'}`}>
-                       <input 
-                         type="radio" 
-                         name="taskType" 
-                         value="workflow"
-                         checked={taskType === 'workflow'} 
-                         onChange={() => setTaskType('workflow')}
-                         className="h-4 w-4 text-accent-blue focus:ring-accent-blue"
-                       />
-                       <div className="flex flex-col">
-                         <span className="text-sm font-medium text-slate-900 dark:text-white">自动工作流</span>
-                         <span className="text-xs text-slate-500 dark:text-slate-400">执行通用自动化任务</span>
-                       </div>
-                     </label>
-                     <label className={`flex flex-1 cursor-pointer items-center gap-3 rounded-lg border p-3 transition-all ${taskType === 'scrape' ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20 dark:border-blue-500' : 'border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800'}`}>
-                       <input 
-                         type="radio" 
-                         name="taskType" 
-                         value="scrape"
-                         checked={taskType === 'scrape'} 
-                         onChange={() => setTaskType('scrape')}
-                         className="h-4 w-4 text-accent-blue focus:ring-accent-blue"
-                       />
-                       <div className="flex flex-col">
-                         <span className="text-sm font-medium text-slate-900 dark:text-white">网页获取</span>
-                         <span className="text-xs text-slate-500 dark:text-slate-400">抓取指定网页数据</span>
-                       </div>
-                     </label>
-                   </div>
-                 </div>
-
-                 <div>
-                   <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">任务提示词</label>
-                   <textarea
-                     className="w-full rounded-lg border border-slate-300 bg-slate-50 p-3 text-sm text-slate-900 focus:border-accent-blue focus:ring-accent-blue dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                     rows={5}
-                     placeholder="请详细描述您需要完成的自动化任务..."
-                     value={taskPrompt}
-                     onChange={(e) => setTaskPrompt(e.target.value)}
-                     autoFocus
-                   />
-                 </div>
-                 
-                 {taskMessage && (
-                   <div className="rounded-lg bg-green-50 p-3 text-sm text-green-600 dark:bg-green-900/20 dark:text-green-400 flex items-center gap-2">
-                     <span className="material-symbols-outlined text-sm">check_circle</span>
-                     {taskMessage}
-                   </div>
-                 )}
-                 
-                 {error && (
-                   <div className="rounded-lg bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-400 flex items-center gap-2">
-                     <span className="material-symbols-outlined text-sm">error</span>
-                     {error}
-                   </div>
-                 )}
-
-                 <div className="mt-2 flex items-center justify-end gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setIsTaskModalOpen(false)}
-                      className="rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 transition-colors"
-                    >
-                      取消
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={loading}
-                      className="rounded-lg bg-gradient-primary px-5 py-2 text-center text-sm font-medium text-white hover:bg-gradient-hover transition-all shadow-lg shadow-purple-600/20 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {loading ? "启动中..." : "开始任务"}
-                    </button>
-                 </div>
+           <div className="w-full max-w-lg rounded-xl bg-surface-light dark:bg-surface-dark p-6 shadow-2xl border border-slate-200 dark:border-slate-800 scale-100 animate-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto">
+              <div className="mb-6 flex items-center justify-between"><h3 className="text-xl font-bold text-slate-900 dark:text-white">新建自动化项目</h3><button onClick={() => setIsProjectModalOpen(false)} className="rounded-full p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"><span className="material-symbols-outlined">close</span></button></div>
+              <form onSubmit={handleCreateProject} className="flex flex-col gap-4">
+                 <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">项目名称</label><input type="text" className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" placeholder="例如：每日竞品抓取" value={projectName} onChange={(e) => setProjectName(e.target.value)} required /></div>
+                 <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">任务类型</label><div className="flex gap-4"><button type="button" onClick={() => setProjectType('workflow')} className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${projectType === 'workflow' ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
+><span className="text-sm font-bold text-slate-900 dark:text-white">自动工作流</span><span className="text-[10px] text-slate-500">执行复杂交互自动化</span></button><button type="button" onClick={() => setProjectType('scrape')} className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${projectType === 'scrape' ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
+><span className="text-sm font-bold text-slate-900 dark:text-white">网页抓取</span><span className="text-[10px] text-slate-500">提取结构化数据</span></button></div></div>
+                 <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">起始 URL</label><input type="url" className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" placeholder="https://..." value={projectUrl} onChange={(e) => setProjectUrl(e.target.value)} /></div>
+                 <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">AI 提示词 (Prompt)</label><textarea className="w-full rounded-lg border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" rows={4} placeholder="描述需要自动完成的操作步骤..." value={projectPrompt} onChange={(e) => setProjectPrompt(e.target.value)} required /></div>
+                 <div className="mt-4 flex justify-end gap-3"><button type="button" onClick={() => setIsProjectModalOpen(false)} className="px-4 py-2 text-sm font-medium text-slate-500">取消</button><button type="submit" disabled={loading} className="bg-gradient-primary text-white px-6 py-2 rounded-lg text-sm font-bold shadow-lg">{loading ? "处理中..." : "保存项目"}</button></div>
               </form>
            </div>
         </div>
+      )}
+
+      {/* Global Alert/Confirm Modal */}
+      {globalModal.isOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+              <div className="w-full max-w-sm rounded-2xl bg-surface-light dark:bg-surface-dark p-6 shadow-2xl border border-slate-200 dark:border-slate-800 scale-100 animate-in zoom-in-95 duration-200">
+                  <div className="flex flex-col items-center text-center gap-4">
+                      <div className={`size-12 rounded-full flex items-center justify-center ${globalModal.type === 'confirm' ? 'bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400' : 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'}`}>
+                          <span className="material-symbols-outlined" style={{ fontSize: "28px" }}>
+                              {globalModal.type === 'confirm' ? 'help' : 'info'}
+                          </span>
+                      </div>
+                      <div>
+                          <h3 className="text-lg font-bold text-slate-900 dark:text-white">{globalModal.title}</h3>
+                          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400 leading-relaxed">{globalModal.message}</p>
+                      </div>
+                      <div className="mt-2 flex w-full gap-3">
+                          {globalModal.type === 'confirm' && (
+                              <button 
+                                onClick={closeModal}
+                                className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                              >
+                                  取消
+                              </button>
+                          )}
+                          <button 
+                            onClick={globalModal.type === 'confirm' ? globalModal.onConfirm : closeModal}
+                            className={`flex-1 px-4 py-2.5 rounded-xl text-white text-sm font-bold shadow-lg transition-all active:scale-95 ${globalModal.type === 'confirm' ? globalModal.confirmColor : 'bg-blue-600'}`}
+                          >
+                              {globalModal.type === 'confirm' ? globalModal.confirmText : "好的"}
+                          </button>
+                      </div>
+                  </div>
+              </div>
+          </div>
       )}
     </div>
   );

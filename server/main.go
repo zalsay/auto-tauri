@@ -20,7 +20,7 @@ func corsMiddleware() gin.HandlerFunc {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
@@ -54,9 +54,18 @@ func setupRouter() *gin.Engine {
 	creditsGroup.Use(authMiddleware())
 	creditsGroup.POST("/recharge", rechargeHandler)
 
+	projectsGroup := api.Group("/projects")
+	projectsGroup.Use(authMiddleware())
+	projectsGroup.POST("", createProjectHandler)
+	projectsGroup.GET("", getProjectsHandler)
+	projectsGroup.DELETE("/:id", deleteProjectHandler)
+	projectsGroup.POST("/:id/execute", executeProjectHandler)
+
 	tasksGroup := api.Group("/tasks")
 	tasksGroup.Use(authMiddleware())
-	tasksGroup.POST("/start", startTaskHandler)
+	tasksGroup.GET("", getTasksHandler)
+	tasksGroup.PATCH("/:id/status", updateTaskStatusHandler)
+	tasksGroup.DELETE("/:id", deleteTaskHandler)
 
 	return r
 }
@@ -89,7 +98,8 @@ func main() {
 	port := GetEnv("SERVER_PORT", "8080")
 	if err := r.Run(":" + port); err != nil {
 		slog.Error(fmt.Sprintf("failed to start server: %v", err))
-	} 
-	slog.Info(fmt.Sprintf("server started on port %s", port))
+	} else {
+		slog.Info(fmt.Sprintf("server started on port %s", port))
+	}
 	
 }

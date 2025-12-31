@@ -7,34 +7,46 @@ import (
 )
 
 type User struct {
-	ID           string `gorm:"primaryKey;type:uuid"`
-	Email        string `gorm:"uniqueIndex;size:255;not null"`
-	PasswordHash string `gorm:"size:255;not null"`
-	Balance      int64  `gorm:"not null;default:0"`
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID           string    `gorm:"primaryKey;type:uuid" json:"id"`
+	Email        string    `gorm:"uniqueIndex;size:255;not null" json:"email"`
+	PasswordHash string    `gorm:"size:255;not null" json:"-"`
+	Balance      int64     `gorm:"not null;default:0" json:"balance"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 type Transaction struct {
-	ID          string    `gorm:"primaryKey;type:uuid"`
-	UserID      string    `gorm:"index;type:uuid;not null"`
-	Amount      int64     `gorm:"not null"`
-	Type        string    `gorm:"size:32;not null"`
-	Description string    `gorm:"size:512"`
-	CreatedAt   time.Time `gorm:"autoCreateTime"`
+	ID          string    `gorm:"primaryKey;type:uuid" json:"id"`
+	UserID      string    `gorm:"index;type:uuid;not null" json:"userId"`
+	Amount      int64     `gorm:"not null" json:"amount"`
+	Type        string    `gorm:"size:32;not null" json:"type"`
+	Description string    `gorm:"size:512" json:"description"`
+	CreatedAt   time.Time `gorm:"autoCreateTime" json:"createdAt"`
+}
+
+type Project struct {
+	ID        string    `gorm:"primaryKey;type:uuid" json:"id"`
+	UserID    string    `gorm:"index;type:uuid;not null" json:"userId"`
+	Name      string    `gorm:"size:255;not null" json:"name"`
+	URL       string    `gorm:"type:text" json:"url"`
+	Prompt    string    `gorm:"type:text;not null" json:"prompt"`
+	Type      string    `gorm:"size:32;not null;default:'workflow'" json:"type"`
+	CreatedAt time.Time `gorm:"autoCreateTime" json:"createdAt"`
+	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
 }
 
 type Task struct {
-	ID        string    `gorm:"primaryKey;type:uuid"`
-	UserID    string    `gorm:"index;type:uuid;not null"`
-	Prompt    string    `gorm:"type:text;not null"`
-	Type      string    `gorm:"size:32;not null;default:'workflow'"`
-	Status    string    `gorm:"size:32;not null"`
-	Cost      int64     `gorm:"not null;default:0"`
-	CreatedAt time.Time `gorm:"autoCreateTime"`
-	UpdatedAt time.Time `gorm:"autoUpdateTime"`
+	ID        string    `gorm:"primaryKey;type:uuid" json:"id"`
+	ProjectID string    `gorm:"index;type:uuid;not null" json:"projectId"`
+	UserID    string    `gorm:"index;type:uuid;not null" json:"userId"`
+	Prompt    string    `gorm:"type:text;not null" json:"prompt"`
+	Type      string    `gorm:"size:32;not null;default:'workflow'" json:"type"`
+	Status    string    `gorm:"size:32;not null" json:"status"`
+	Cost      int64     `gorm:"not null;default:0" json:"cost"`
+	CreatedAt time.Time `gorm:"autoCreateTime" json:"createdAt"`
+	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
 }
 
 func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(&User{}, &Transaction{}, &Task{})
+	return db.AutoMigrate(&User{}, &Transaction{}, &Project{}, &Task{})
 }

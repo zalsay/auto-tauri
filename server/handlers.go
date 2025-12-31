@@ -43,14 +43,21 @@ type RechargeRequest struct {
 	Description string `json:"description"`
 }
 
-type TaskStartRequest struct {
+type ProjectCreateRequest struct {
+	Name   string `json:"name"`
+	URL    string `json:"url"`
 	Prompt string `json:"prompt"`
 	Type   string `json:"type"`
 }
 
 type TaskStartResponse struct {
-	TaskID  string `json:"task_id"`
-	Message string `json:"message"`
+	TaskID  string  `json:"taskId"`
+	Project Project `json:"project"`
+	Message string  `json:"message"`
+}
+
+type TaskStatusUpdateRequest struct {
+	Status string `json:"status"`
 }
 
 func runWithUserLockAndTx(userID string, fn func(tx *gorm.DB) error) error {
@@ -77,23 +84,10 @@ func runWithUserLockAndTx(userID string, fn func(tx *gorm.DB) error) error {
 }
 
 func meHandler(c *gin.Context) {
-	userIDValue, exists := c.Get("userID")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-	userID, ok := userIDValue.(string)
-	if !ok || userID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
+	userID := c.MustGet("userID").(string)
 	var user User
 	if err := globalDB.Where("id = ?", userID).First(&user).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "user_not_found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_load_user"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "user_not_found"})
 		return
 	}
 	c.JSON(http.StatusOK, AuthResponseUser{
@@ -109,31 +103,13 @@ func registerHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
 		return
 	}
-	if req.Email == "" || req.Password == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "email_and_password_required"})
-		return
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_hash_password"})
-		return
-	}
-	id := uuid.NewString()
-	user := User{
-		ID:           id,
-		Email:        req.Email,
-		PasswordHash: string(hash),
-		Balance:      0,
-	}
+	hash, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	user := User{ID: uuid.NewString(), Email: req.Email, PasswordHash: string(hash)}
 	if err := globalDB.Create(&user).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_create_user"})
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{
-		"id":      user.ID,
-		"email":   user.Email,
-		"balance": user.Balance,
-	})
+	c.JSON(http.StatusCreated, user)
 }
 
 func loginHandler(c *gin.Context) {
@@ -144,207 +120,169 @@ func loginHandler(c *gin.Context) {
 	}
 	var user User
 	if err := globalDB.Where("email = ?", req.Email).First(&user).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_query_user"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
 		return
 	}
-	claims := jwt.MapClaims{
-		"sub":   user.ID,
-		"email": user.Email,
-		"exp":   time.Now().Add(24 * time.Hour).Unix(),
-		"iat":   time.Now().Unix(),
-	}
+	claims := jwt.MapClaims{"sub": user.ID, "exp": time.Now().Add(24 * time.Hour).Unix()}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString(jwtSecret)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_sign_token"})
-		return
-	}
-	resp := AuthResponse{
-		Token: tokenString,
-		User: AuthResponseUser{
-			ID:      user.ID,
-			Email:   user.Email,
-			Balance: user.Balance,
-		},
-	}
-	c.JSON(http.StatusOK, resp)
+	tokenString, _ := token.SignedString(jwtSecret)
+	c.JSON(http.StatusOK, AuthResponse{Token: tokenString, User: AuthResponseUser{ID: user.ID, Email: user.Email, Balance: user.Balance}})
 }
 
 func authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authorization_required"})
+			c.AbortWithStatus(401)
 			return
 		}
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid_authorization_header"})
-			return
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		token, _ := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) { return jwtSecret, nil })
+		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+			c.Set("userID", claims["sub"].(string))
+			c.Next()
+		} else {
+			c.AbortWithStatus(401)
 		}
-		tokenString := parts[1]
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, errors.New("invalid_signing_method")
-			}
-			return jwtSecret, nil
-		})
-		if err != nil || !token.Valid {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid_token"})
-			return
-		}
-		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid_token_claims"})
-			return
-		}
-		userIDValue, ok := claims["sub"].(string)
-		if !ok || userIDValue == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid_token_subject"})
-			return
-		}
-		c.Set("userID", userIDValue)
-		c.Next()
 	}
 }
 
 func rechargeHandler(c *gin.Context) {
-	userIDValue, exists := c.Get("userID")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-	userID, ok := userIDValue.(string)
-	if !ok || userID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
+	userID := c.MustGet("userID").(string)
 	var req RechargeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
-		return
-	}
-	if req.Amount <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "amount_must_be_positive"})
-		return
-	}
-	err := runWithUserLockAndTx(userID, func(tx *gorm.DB) error {
+	c.ShouldBindJSON(&req)
+	runWithUserLockAndTx(userID, func(tx *gorm.DB) error {
 		var user User
-		if err := tx.Where("id = ?", userID).First(&user).Error; err != nil {
-			return err
-		}
+		tx.Where("id = ?", userID).First(&user)
 		user.Balance += req.Amount
-		if err := tx.Save(&user).Error; err != nil {
-			return err
-		}
-		tr := Transaction{
-			ID:          uuid.NewString(),
-			UserID:      user.ID,
-			Amount:      req.Amount,
-			Type:        "recharge",
-			Description: req.Description,
-		}
-		return tx.Create(&tr).Error
+		tx.Save(&user)
+		tx.Create(&Transaction{ID: uuid.NewString(), UserID: userID, Amount: req.Amount, Type: "recharge", Description: req.Description})
+		return nil
 	})
-	if err != nil {
-		if errors.Is(err, errConcurrentOperation) {
-			c.JSON(http.StatusConflict, gin.H{"error": "concurrent_operation"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_recharge"})
-		return
-	}
 	var user User
-	if err := globalDB.Where("id = ?", userID).First(&user).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_load_user"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"balance": user.Balance,
-	})
+	globalDB.Where("id = ?", userID).First(&user)
+	c.JSON(http.StatusOK, gin.H{"balance": user.Balance})
 }
 
-func startTaskHandler(c *gin.Context) {
-	userIDValue, exists := c.Get("userID")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-	userID, ok := userIDValue.(string)
-	if !ok || userID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-	var req TaskStartRequest
+// Project Handlers
+func createProjectHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	var req ProjectCreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
 		return
 	}
-	if req.Prompt == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "prompt_required"})
+	project := Project{
+		ID:     uuid.NewString(),
+		UserID: userID,
+		Name:   req.Name,
+		URL:    req.URL,
+		Prompt: req.Prompt,
+		Type:   req.Type,
+	}
+	if err := globalDB.Create(&project).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_create_project"})
 		return
 	}
+	c.JSON(http.StatusCreated, project)
+}
+
+func getProjectsHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	var projects []Project
+	globalDB.Where("user_id = ?", userID).Order("created_at desc").Find(&projects)
+	c.JSON(http.StatusOK, projects)
+}
+
+func deleteProjectHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	id := c.Param("id")
+	globalDB.Where("id = ? AND user_id = ?", id, userID).Delete(&Project{})
+	c.JSON(http.StatusOK, gin.H{"message": "project_deleted"})
+}
+
+// Execution Handler
+func executeProjectHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	projectID := c.Param("id")
+	
+	var project Project
+	if err := globalDB.Where("id = ? AND user_id = ?", projectID, userID).First(&project).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "project_not_found"})
+		return
+	}
+
 	taskCost := int64(10)
 	taskID := uuid.NewString()
-	taskType := req.Type
-	if taskType == "" {
-		taskType = "workflow"
-	}
 
 	err := runWithUserLockAndTx(userID, func(tx *gorm.DB) error {
 		var user User
-		if err := tx.Where("id = ?", userID).First(&user).Error; err != nil {
-			return err
-		}
+		tx.Where("id = ?", userID).First(&user)
 		if user.Balance < taskCost {
 			return errInsufficientBalance
 		}
 		user.Balance -= taskCost
-		if err := tx.Save(&user).Error; err != nil {
-			return err
-		}
-		tr := Transaction{
-			ID:     uuid.NewString(),
-			UserID: user.ID,
-			Amount: -taskCost,
-			Type:   "consume",
-		}
-		if err := tx.Create(&tr).Error; err != nil {
-			return err
-		}
+		tx.Save(&user)
+		tx.Create(&Transaction{ID: uuid.NewString(), UserID: userID, Amount: -taskCost, Type: "consume"})
+		
 		task := Task{
-			ID:     taskID,
-			UserID: user.ID,
-			Prompt: req.Prompt,
-			Type:   taskType,
-			Status: "pending",
-			Cost:   taskCost,
+			ID:        taskID,
+			ProjectID: projectID,
+			UserID:    userID,
+			Prompt:    project.Prompt,
+			Type:      project.Type,
+			Status:    "running",
+			Cost:      taskCost,
 		}
 		return tx.Create(&task).Error
 	})
+
 	if err != nil {
-		if errors.Is(err, errInsufficientBalance) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "insufficient_balance"})
-			return
-		}
-		if errors.Is(err, errConcurrentOperation) {
-			c.JSON(http.StatusConflict, gin.H{"error": "concurrent_operation"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_start_task"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	resp := TaskStartResponse{
+
+	c.JSON(http.StatusOK, TaskStartResponse{
 		TaskID:  taskID,
-		Message: "扣费成功，任务启动中...",
+		Project: project,
+		Message: "任务启动中...",
+	})
+}
+
+func getTasksHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	var tasks []Task
+	globalDB.Where("user_id = ?", userID).Order("created_at desc").Find(&tasks)
+	c.JSON(http.StatusOK, tasks)
+}
+
+func updateTaskStatusHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	taskID := c.Param("id")
+	var req TaskStatusUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		return
 	}
-	c.JSON(http.StatusOK, resp)
+
+	if err := globalDB.Model(&Task{}).Where("id = ? AND user_id = ?", taskID, userID).Update("status", req.Status).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_update_task_status"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "task_status_updated"})
+}
+
+func deleteTaskHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	taskID := c.Param("id")
+	if err := globalDB.Where("id = ? AND user_id = ?", taskID, userID).Delete(&Task{}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_delete_task"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "task_deleted"})
 }

@@ -17,6 +17,28 @@
         }
       ]
     },
+    "shell:allow-spawn",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "hyperagent",
+          "sidecar": true,
+          "args": []
+        }
+      ]
+    },
+    "shell:allow-stdin-write",
+    {
+      "identifier": "shell:allow-stdin-write",
+      "allow": [
+        {
+          "name": "hyperagent",
+          "sidecar": true,
+          "args": []
+        }
+      ]
+    },
     "shell:allow-open"
   ]
 }

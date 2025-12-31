@@ -10,22 +10,33 @@ function getBaseUrl() {
 
 export async function apiRequest(path: string, options: RequestInit = {}) {
   const url = getBaseUrl() + path;
+  console.log(`[API Request] ${options.method || 'GET'} ${url}`, options);
+  
   const headers = new Headers(options.headers || {});
   if (!headers.has("Content-Type") && options.body) {
     headers.set("Content-Type", "application/json");
   }
-  const response = await fetch(url, { ...options, headers });
-  const text = await response.text();
-  let data: unknown;
+  
   try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = text;
+    const response = await fetch(url, { ...options, headers });
+    console.log(`[API Response] ${response.status} ${url}`);
+    
+    const text = await response.text();
+    let data: unknown;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+    
+    if (!response.ok) {
+      throw { status: response.status, data };
+    }
+    return data;
+  } catch (error) {
+    console.error(`[API Error] ${url}`, error);
+    throw error;
   }
-  if (!response.ok) {
-    throw { status: response.status, data };
-  }
-  return data;
 }
 
 export function getStoredToken() {
@@ -39,4 +50,3 @@ export function setStoredToken(token: string) {
 export function clearStoredToken() {
   window.localStorage.removeItem("auth_token");
 }
-
