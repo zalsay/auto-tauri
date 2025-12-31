@@ -65,6 +65,118 @@ interface GlobalModalConfig {
     confirmColor?: string;
 }
 
+function HyperAgentResultDisplay({ data }: { data: any }) {
+    // Try to extract the structured data
+    // The hyperagent output often has a nested data object
+    const result = data?.data || data;
+    const output = result?.output;
+    const steps = result?.steps || [];
+    
+    const isStructured = output || steps.length > 0;
+
+    if (!isStructured) {
+        return (
+            <div className="bg-slate-50 dark:bg-slate-900 rounded-lg p-4 font-mono text-xs overflow-x-auto text-slate-900 dark:text-emerald-400">
+                <pre>{JSON.stringify(data, null, 2)}</pre>
+            </div>
+        );
+    }
+
+    return (
+        <div className="flex flex-col gap-6">
+            {output && (
+                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-xl p-5 shadow-sm">
+                    <h4 className="text-sm font-bold text-blue-700 dark:text-blue-400 mb-3 flex items-center gap-2">
+                        <span className="material-symbols-outlined text-lg">description</span>
+                        最终结论
+                    </h4>
+                    <div className="text-slate-900 dark:text-slate-100 text-sm whitespace-pre-wrap leading-relaxed">
+                        {output}
+                    </div>
+                </div>
+            )}
+
+            {steps.length > 0 && (
+                <div className="flex flex-col gap-4">
+                    <h4 className="text-sm font-bold text-slate-500 dark:text-slate-400 flex items-center gap-2 px-1">
+                        <span className="material-symbols-outlined text-lg">format_list_numbered</span>
+                        执行步骤 ({steps.length})
+                    </h4>
+                    <div className="space-y-3">
+                        {steps.map((step: any, idx: number) => (
+                            <div key={idx} className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-white dark:bg-slate-900/40 transition-all hover:border-slate-300 dark:hover:border-slate-700">
+                                <div className="bg-slate-50 dark:bg-slate-800/50 px-4 py-2.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                        <span className="flex items-center justify-center size-5 rounded-full bg-slate-200 dark:bg-slate-700 text-[10px] font-bold text-slate-600 dark:text-slate-400">
+                                            {idx + 1}
+                                        </span>
+                                        <span className="text-xs font-bold text-slate-700 dark:text-slate-300 capitalize">
+                                            {step.agentOutput?.action?.type?.replace(/_/g, ' ') || 'Action'}
+                                        </span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        {step.actionOutput?.success ? (
+                                            <span className="flex items-center gap-1 text-[10px] font-bold text-green-600 bg-green-50 dark:bg-green-900/20 px-2 py-0.5 rounded-full">
+                                                <span className="material-symbols-outlined text-[12px]">check_circle</span>成功
+                                            </span>
+                                        ) : (
+                                            <span className="flex items-center gap-1 text-[10px] font-bold text-red-600 bg-red-50 dark:bg-red-900/20 px-2 py-0.5 rounded-full">
+                                                <span className="material-symbols-outlined text-[12px]">error</span>失败
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="p-4 space-y-3">
+                                    {step.agentOutput?.thoughts && (
+                                        <div className="flex gap-3 items-start">
+                                            <span className="material-symbols-outlined text-slate-400 mt-0.5" style={{ fontSize: '18px' }}>psychology</span>
+                                            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed italic">
+                                                {step.agentOutput.thoughts}
+                                            </p>
+                                        </div>
+                                    )}
+                                    
+                                    {step.agentOutput?.action?.params && Object.keys(step.agentOutput.action.params).length > 0 && (
+                                        <div className="ml-7 p-3 rounded-lg bg-slate-50 dark:bg-slate-800/30 border border-slate-100 dark:border-slate-800/50">
+                                            <div className="grid grid-cols-1 gap-2">
+                                                {Object.entries(step.agentOutput.action.params).map(([key, val]: [string, any]) => (
+                                                    <div key={key} className="text-[11px] flex flex-col sm:flex-row sm:gap-2">
+                                                        <span className="text-slate-500 dark:text-slate-500 font-medium sm:min-w-[80px]">{key}:</span>
+                                                        <span className="text-slate-800 dark:text-slate-200 break-all font-mono">
+                                                            {typeof val === 'object' ? JSON.stringify(val) : String(val)}
+                                                        </span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                    
+                                    {step.actionOutput?.message && step.actionOutput.message !== "Task Complete" && (
+                                        <div className="ml-7 flex gap-2 items-center text-[10px] text-slate-500 dark:text-slate-500">
+                                            <span className="material-symbols-outlined text-[14px]">info</span>
+                                            <span>{step.actionOutput.message}</span>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            <details className="group">
+                <summary className="text-[10px] text-slate-400 dark:text-slate-600 cursor-pointer hover:text-slate-500 transition-colors list-none flex items-center gap-1">
+                    <span className="material-symbols-outlined text-[12px] group-open:rotate-90 transition-transform">chevron_right</span>
+                    查看原始数据 (JSON)
+                </summary>
+                <div className="mt-2 bg-slate-50 dark:bg-slate-900 rounded-lg p-4 font-mono text-[10px] overflow-x-auto text-slate-900 dark:text-emerald-400/80 border border-slate-100 dark:border-slate-800">
+                    <pre>{JSON.stringify(data, null, 2)}</pre>
+                </div>
+            </details>
+        </div>
+    );
+}
+
 function App() {
   const [view, setView] = useState<View>("login");
   const [email, setEmail] = useState("");
@@ -89,6 +201,9 @@ function App() {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [llmProvider, setLlmProvider] = useState("TaskMaster");
+  const [llmModel, setLlmModel] = useState("");
+  const [llmApiKey, setLlmApiKey] = useState("");
+  const [llmBaseUrl, setLlmBaseUrl] = useState("");
 
   // Lists
   const [projectsList, setProjectsList] = useState<Project[]>([]);
@@ -139,6 +254,9 @@ function App() {
           if (dashView === 'settings') {
               if (user) {
                   setLlmProvider(user.llmProvider || "TaskMaster");
+                  setLlmModel(user.llmModel || "");
+                  setLlmApiKey(user.llmApiKey || "");
+                  setLlmBaseUrl(user.llmBaseUrl || "");
               }
           }
       }
@@ -396,14 +514,18 @@ function App() {
       setTaskLogs(logs => [...logs, `[System] 启动项目: ${project.name}`, `[System] 任务 ID: ${data.taskId}`, `[System] 正在启动引擎...`]);
 
       // 3. Resolve Effective Config using the latest user data from DB
-      // FORCE TaskMaster logic for now since we simplified settings
       let provider = 'openai'; 
-      let model = me.llmModel || 'google/gemini-3-flash-preview';
+      let model = me.llmModel;
       let apiKey = me.llmApiKey || '';
-      let baseURL = me.llmBaseUrl || 'https://openrouter.ai/api/v1';
+      let baseURL = me.llmBaseUrl;
 
-      if (model === 'auto') {
-          model = 'google/gemini-3-flash-preview';
+      if (me.llmProvider === 'TaskMaster') {
+          model = 'google/gemini-2.0-flash-exp:free';
+          baseURL = 'https://openrouter.ai/api/v1';
+      } else {
+          // Custom defaults if missing
+          if (!model) model = 'gpt-4o';
+          if (!baseURL) baseURL = 'https://api.openai.com/v1';
       }
 
       // 4. Spawn Sidecar
@@ -499,11 +621,11 @@ function App() {
       e.preventDefault();
       setLoading(true);
       try {
-          // IMPORTANT: Only send the fields that are visible/editable.
-          // By not sending llmApiKey and llmBaseUrl, the backend will preserve existing values.
           const payload = {
-              llmProvider: "TaskMaster", 
-              llmModel: "auto"
+              llmProvider,
+              llmModel: llmProvider === 'TaskMaster' ? 'auto' : llmModel,
+              llmApiKey: llmProvider === 'TaskMaster' ? '' : llmApiKey,
+              llmBaseUrl: llmProvider === 'TaskMaster' ? '' : llmBaseUrl
           };
           await apiRequest("/api/v1/users/settings", {
               method: "PATCH",
@@ -650,9 +772,9 @@ function App() {
                      <div className="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 transition-all hover:border-accent-blue/30">
                         <div className="flex items-center justify-between mb-2"><p className="text-sm font-medium text-slate-500 dark:text-slate-400">总余额</p><span className="material-symbols-outlined text-accent-blue">account_balance_wallet</span></div>
                         <p className="text-3xl font-bold mb-4">{user?.balance}</p>
-                        <form onSubmit={handleRecharge} className="flex items-center justify-between gap-3">
-                           <input type="number" className="flex-1 rounded-lg border p-2 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" value={rechargeAmount} onChange={(e) => setRechargeAmount(e.target.value)} placeholder="金额" />
-                           <button type="submit" disabled={loading} className="bg-gradient-primary text-white px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap shrink-0">充值</button>
+                        <form onSubmit={handleRecharge} className="flex flex-wrap items-center gap-3">
+                           <input type="number" className="grow-[100] basis-[100px] rounded-lg border p-2 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" value={rechargeAmount} onChange={(e) => setRechargeAmount(e.target.value)} placeholder="金额" />
+                           <button type="submit" disabled={loading} className="grow basis-auto bg-gradient-primary text-white px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap">充值</button>
                         </form>
                      </div>
                      <div className="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 transition-all hover:border-accent-blue/30">
@@ -726,7 +848,18 @@ function App() {
                          </div>
                     </div>
                     <div className="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 flex flex-col">
-                        <h3 className="text-lg font-bold mb-4 flex items-center gap-2"><span className="material-symbols-outlined text-orange-500">pending_actions</span>执行状态</h3>
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="text-lg font-bold flex items-center gap-2"><span className="material-symbols-outlined text-orange-500">pending_actions</span>执行状态</h3>
+                            {taskStatus !== 'running' && activeProject && (
+                                <button 
+                                    onClick={() => handleExecuteProject(activeProject)}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-blue/10 text-accent-blue hover:bg-accent-blue/20 transition-colors text-xs font-medium"
+                                >
+                                    <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>play_arrow</span>
+                                    再次执行
+                                </button>
+                            )}
+                        </div>
                          <div className="flex-1 flex items-center justify-center flex-col gap-3">
                             {taskStatus === 'running' && <><div className="size-12 rounded-full border-4 border-slate-200 border-t-accent-blue animate-spin"></div><p className="text-slate-500">任务正在执行中...</p></>}
                             {taskStatus === 'completed' && <><div className="size-12 rounded-full bg-green-100 dark:bg-green-900/30 text-green-600 flex items-center justify-center"><span className="material-symbols-outlined" style={{ fontSize: "32px" }}>check</span></div><p className="text-green-600 font-bold">任务执行完成</p></>}
@@ -737,10 +870,17 @@ function App() {
                 {/* Result Section */}
                 {lastResultData && (
                     <div className="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800">
-                        <h3 className="text-lg font-bold mb-4 flex items-center gap-2"><span className="material-symbols-outlined text-emerald-500">data_object</span>执行结果</h3>
-                        <div className="bg-slate-50 dark:bg-slate-900 rounded-lg p-4 font-mono text-xs overflow-x-auto text-slate-900 dark:text-emerald-400">
-                            <pre>{JSON.stringify(JSON.parse(lastResultData), null, 2)}</pre>
-                        </div>
+                        <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
+                            <span className="material-symbols-outlined text-emerald-500">verified_user</span>
+                            执行结果
+                        </h3>
+                        <HyperAgentResultDisplay data={(() => {
+                            try {
+                                return JSON.parse(lastResultData);
+                            } catch (e) {
+                                return { output: lastResultData };
+                            }
+                        })()} />
                     </div>
                 )}
                 <div className="flex-1 rounded-xl bg-[#1e1e1e] shadow-sm border border-slate-800 flex flex-col overflow-hidden min-h-[300px]">
@@ -771,7 +911,14 @@ function App() {
                                      <td className="px-6 py-4 text-right">
                                          <div className="flex justify-end gap-2">
                                              {task.result && (
-                                                 <button onClick={() => { setLastResultData(task.result); setDashView('task_detail'); }} className="p-1.5 rounded-md text-slate-400 hover:text-emerald-500" title="查看结果"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>description</span></button>
+                                                 <button onClick={() => { 
+                                                     const project = projectsList.find(p => p.id === task.projectId);
+                                                     if (project) setActiveProject(project);
+                                                     setActiveTaskId(task.id);
+                                                     setTaskStatus(task.status as TaskStatus);
+                                                     setLastResultData(task.result); 
+                                                     setDashView('task_detail'); 
+                                                 }} className="p-1.5 rounded-md text-slate-400 hover:text-emerald-500" title="查看结果"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>description</span></button>
                                              )}
                                              <button onClick={() => handleDeleteTask(task.id)} className="p-1.5 rounded-md text-slate-400 hover:text-red-500 transition-colors" title="删除记录"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>delete</span></button>
                                          </div>
@@ -837,7 +984,7 @@ function App() {
                       </h3>
                       <form onSubmit={handleUpdateSettings} className="flex flex-col gap-6">
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                              <div>
+                              <div className="md:col-span-2">
                                   <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">模型服务商</label>
                                   <select 
                                     className="custom-select w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-accent-blue/20"
@@ -845,17 +992,56 @@ function App() {
                                     onChange={(e) => setLlmProvider(e.target.value)}
                                   >
                                       <option value="TaskMaster">TaskMaster (强烈推荐)</option>
+                                      <option value="custom">自定义 (OpenAI 兼容)</option>
                                   </select>
                               </div>
-                              <div>
-                                  <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">指定模型</label>
-                                  <input 
-                                    type="text" 
-                                    className="w-full rounded-xl border border-slate-300 bg-slate-200 p-3 text-sm dark:bg-slate-700 dark:border-slate-600 text-slate-500 dark:text-slate-400 focus:outline-none cursor-not-allowed"
-                                    value="auto" 
-                                    readOnly
-                                  />
-                              </div>
+
+                              {llmProvider !== 'TaskMaster' && (
+                                <>
+                                  <div className="md:col-span-2">
+                                      <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Base URL</label>
+                                      <input 
+                                        type="text" 
+                                        className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-accent-blue/20"
+                                        placeholder="https://api.openai.com/v1"
+                                        value={llmBaseUrl} 
+                                        onChange={(e) => setLlmBaseUrl(e.target.value)}
+                                      />
+                                  </div>
+                                  <div>
+                                      <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">API Key</label>
+                                      <input 
+                                        type="password" 
+                                        className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-accent-blue/20"
+                                        placeholder="sk-..."
+                                        value={llmApiKey} 
+                                        onChange={(e) => setLlmApiKey(e.target.value)}
+                                      />
+                                  </div>
+                                  <div>
+                                      <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">模型 ID</label>
+                                      <input 
+                                        type="text" 
+                                        className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-accent-blue/20"
+                                        placeholder="gpt-4o"
+                                        value={llmModel} 
+                                        onChange={(e) => setLlmModel(e.target.value)}
+                                      />
+                                  </div>
+                                </>
+                              )}
+
+                              {llmProvider === 'TaskMaster' && (
+                                  <div className="md:col-span-2">
+                                      <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">指定模型</label>
+                                      <input 
+                                        type="text" 
+                                        className="w-full rounded-xl border border-slate-300 bg-slate-200 p-3 text-sm dark:bg-slate-700 dark:border-slate-600 text-slate-500 dark:text-slate-400 focus:outline-none cursor-not-allowed"
+                                        value="auto (由系统自动选择最佳模型)" 
+                                        readOnly
+                                      />
+                                  </div>
+                              )}
                           </div>
                           <div className="flex justify-end">
                               <button type="submit" disabled={loading} className="bg-gradient-primary text-white px-8 py-2.5 rounded-xl text-sm font-bold shadow-lg hover:scale-[1.02] transition-transform">保存配置</button>
