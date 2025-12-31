@@ -54,6 +54,13 @@ type ProjectCreateRequest struct {
 	Type   string `json:"type"`
 }
 
+type ProjectUpdateRequest struct {
+	Name   string `json:"name"`
+	URL    string `json:"url"`
+	Prompt string `json:"prompt"`
+	Type   string `json:"type"`
+}
+
 type TaskStartResponse struct {
 	TaskID  string  `json:"taskId"`
 	Project Project `json:"project"`
@@ -62,6 +69,7 @@ type TaskStartResponse struct {
 
 type TaskStatusUpdateRequest struct {
 	Status string `json:"status"`
+	Result string `json:"result"`
 }
 
 type ChangePasswordRequest struct {
@@ -70,10 +78,10 @@ type ChangePasswordRequest struct {
 }
 
 type UserSettingsUpdateRequest struct {
-	LLMProvider string `json:"llmProvider"`
-	LLMModel    string `json:"llmModel"`
-	LLMAPIKey   string `json:"llmApiKey"`
-	LLMBaseURL  string `json:"llmBaseUrl"`
+	LLMProvider *string `json:"llmProvider"`
+	LLMModel    *string `json:"llmModel"`
+	LLMAPIKey   *string `json:"llmApiKey"`
+	LLMBaseURL  *string `json:"llmBaseUrl"`
 }
 
 func runWithUserLockAndTx(userID string, fn func(tx *gorm.DB) error) error {
@@ -129,7 +137,7 @@ func registerHandler(c *gin.Context) {
 		Email:        req.Email,
 		PasswordHash: string(hash),
 		LLMProvider:  "TaskMaster",
-		LLMModel:     "google/gemini-2.0-flash-exp:free",
+		LLMModel:     "google/gemini-3-flash-preview",
 		LLMBaseURL:   "https://openrouter.ai/api/v1",
 	}
 	if err := globalDB.Create(&user).Error; err != nil {
@@ -248,17 +256,18 @@ func updateUserSettingsHandler(c *gin.Context) {
 	}
 
 	updates := make(map[string]interface{})
-	if req.LLMProvider != "" {
-		updates["llm_provider"] = req.LLMProvider
+	if req.LLMProvider != nil {
+		updates["llm_provider"] = *req.LLMProvider
 	}
-	if req.LLMModel != "" {
-		updates["llm_model"] = req.LLMModel
+	if req.LLMModel != nil {
+		updates["llm_model"] = *req.LLMModel
 	}
-	if req.LLMBaseURL != "" {
-		updates["llm_base_url"] = req.LLMBaseURL
+	if req.LLMBaseURL != nil && *req.LLMBaseURL != "" {
+		updates["llm_base_url"] = *req.LLMBaseURL
 	}
-	// Always update API Key (allow clearing)
-	updates["llm_api_key"] = req.LLMAPIKey
+	if req.LLMAPIKey != nil && *req.LLMAPIKey != "" {
+		updates["llm_api_key"] = *req.LLMAPIKey
+	}
 
 	if err := globalDB.Model(&User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_update_settings"})
@@ -289,6 +298,30 @@ func createProjectHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, project)
+}
+
+func updateProjectHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	id := c.Param("id")
+	var req ProjectUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		return
+	}
+
+	updates := map[string]interface{}{
+		"name":   req.Name,
+		"url":    req.URL,
+		"prompt": req.Prompt,
+		"type":   req.Type,
+	}
+
+	if err := globalDB.Model(&Project{}).Where("id = ? AND user_id = ?", id, userID).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_update_project"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "project_updated"})
 }
 
 func getProjectsHandler(c *gin.Context) {
@@ -369,7 +402,14 @@ func updateTaskStatusHandler(c *gin.Context) {
 		return
 	}
 
-	if err := globalDB.Model(&Task{}).Where("id = ? AND user_id = ?", taskID, userID).Update("status", req.Status).Error; err != nil {
+	updates := map[string]interface{}{
+		"status": req.Status,
+	}
+	if req.Result != "" {
+		updates["result"] = req.Result
+	}
+
+	if err := globalDB.Model(&Task{}).Where("id = ? AND user_id = ?", taskID, userID).Updates(updates).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_update_task_status"})
 		return
 	}

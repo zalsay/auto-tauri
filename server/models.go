@@ -14,7 +14,7 @@ type User struct {
 	
 	// LLM Settings
 	LLMProvider  string    `gorm:"size:64;default:'TaskMaster'" json:"llmProvider"`
-	LLMModel     string    `gorm:"size:64;default:'auto'" json:"llmModel"`
+	LLMModel     string    `gorm:"size:64;default:'google/gemini-3-flash-preview'" json:"llmModel"`
 	LLMAPIKey    string    `gorm:"size:255" json:"llmApiKey"`
 	LLMBaseURL   string    `gorm:"size:255" json:"llmBaseUrl"`
 
@@ -49,6 +49,7 @@ type Task struct {
 	Prompt    string    `gorm:"type:text;not null" json:"prompt"`
 	Type      string    `gorm:"size:32;not null;default:'workflow'" json:"type"`
 	Status    string    `gorm:"size:32;not null" json:"status"`
+	Result    string    `gorm:"type:text" json:"result"` // New Field
 	Cost      int64     `gorm:"not null;default:0" json:"cost"`
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"createdAt"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updatedAt"`

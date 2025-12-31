@@ -49,6 +49,7 @@ interface Task {
   prompt: string;
   type: string;
   status: string;
+  result: string;
   cost: number;
   createdAt: string;
   updatedAt: string;
@@ -80,15 +81,18 @@ function App() {
   const [projectUrl, setProjectUrl] = useState("");
   const [projectType, setProjectType] = useState<"workflow" | "scrape">("workflow");
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editProjectId, setEditProjectId] = useState<string | null>(null);
 
   // Settings inputs
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [llmProvider, setLlmProvider] = useState("TaskMaster");
-  const [llmModel, setLlmModel] = useState("auto");
-  const [llmApiKey, setLlmApiKey] = useState("");
-  const [llmBaseUrl, setLlmBaseUrl] = useState("");
+
+  // Lists
+  const [projectsList, setProjectsList] = useState<Project[]>([]);
+  const [tasksList, setTasksList] = useState<Task[]>([]);
 
   // UI State
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -109,10 +113,7 @@ function App() {
   const [taskStatus, setTaskStatus] = useState<TaskStatus>("pending");
   const [taskLogs, setTaskLogs] = useState<string[]>([])
   const logsEndRef = useRef<HTMLDivElement>(null);
-
-  // Lists
-  const [projectsList, setProjectsList] = useState<Project[]>([]);
-  const [tasksList, setTasksList] = useState<Task[]>([]);
+  const [lastResultData, setLastResultData] = useState<string>("");
 
   useEffect(() => {
     const storedToken = getStoredToken();
@@ -138,9 +139,6 @@ function App() {
           if (dashView === 'settings') {
               if (user) {
                   setLlmProvider(user.llmProvider || "TaskMaster");
-                  setLlmModel(user.llmModel || "auto");
-                  setLlmApiKey(user.llmApiKey || "");
-                  setLlmBaseUrl(user.llmBaseUrl || "");
               }
           }
       }
@@ -278,26 +276,58 @@ function App() {
     }
   }
 
-  async function handleCreateProject(e: React.FormEvent) {
+  async function handleSubmitProject(e: React.FormEvent) {
       e.preventDefault();
       setLoading(true);
       try {
-          await apiRequest("/api/v1/projects", {
-              method: "POST",
-              body: JSON.stringify({ name: projectName, url: projectUrl, prompt: projectPrompt, type: projectType }),
-              headers: { Authorization: "Bearer " + token },
-          });
+          const body = JSON.stringify({ name: projectName, url: projectUrl, prompt: projectPrompt, type: projectType });
+          if (isEditing && editProjectId) {
+              await apiRequest(`/api/v1/projects/${editProjectId}`, {
+                  method: "PUT",
+                  body,
+                  headers: { Authorization: "Bearer " + token },
+              });
+              showAlert("修改成功", "项目配置已更新。");
+          } else {
+              await apiRequest("/api/v1/projects", {
+                  method: "POST",
+                  body,
+                  headers: { Authorization: "Bearer " + token },
+              });
+              showAlert("项目创建成功", "您现在可以启动该项目的自动化流程。");
+          }
           setIsProjectModalOpen(false);
+          setIsEditing(false);
+          setEditProjectId(null);
           setProjectName("");
           setProjectUrl("");
           setProjectPrompt("");
           loadProjects();
-          showAlert("项目创建成功", "您现在可以启动该项目的自动化流程。");
       } catch (e) {
-          showAlert("创建失败", "无法保存项目配置。");
+          showAlert("操作失败", "无法保存项目配置。");
       } finally {
           setLoading(false);
       }
+  }
+
+  function handleOpenCreateModal() {
+      setIsEditing(false);
+      setEditProjectId(null);
+      setProjectName("");
+      setProjectUrl("");
+      setProjectPrompt("");
+      setProjectType("workflow");
+      setIsProjectModalOpen(true);
+  }
+
+  function handleOpenEditModal(p: Project) {
+      setIsEditing(true);
+      setEditProjectId(p.id);
+      setProjectName(p.name);
+      setProjectUrl(p.url);
+      setProjectPrompt(p.prompt);
+      setProjectType(p.type as any);
+      setIsProjectModalOpen(true);
   }
 
   async function handleDeleteProject(id: string) {
@@ -315,11 +345,11 @@ function App() {
       }, "立即删除", "bg-red-600");
   }
 
-  async function updateTaskStatus(taskId: string, status: string) {
+  async function updateTaskStatus(taskId: string, status: string, result?: string) {
       try {
           await apiRequest(`/api/v1/tasks/${taskId}/status`, {
               method: "PATCH",
-              body: JSON.stringify({ status }),
+              body: JSON.stringify({ status, result: result || "" }),
               headers: { Authorization: "Bearer " + token },
           });
       } catch (e) {
@@ -328,12 +358,16 @@ function App() {
   }
 
   async function handleExecuteProject(project: Project) {
-    if (!token) return;
+    if (!token || !user) return;
     setLoading(true);
     setTaskLogs([]);
     setTaskStatus("pending");
+    setLastResultData("");
     setActiveProject(project);
     
+    // Persistent refs to use in event handlers
+    let currentResult = "";
+
     try {
       // 1. Start execution on backend
       const data = (await apiRequest(`/api/v1/projects/${project.id}/execute`, {
@@ -341,7 +375,7 @@ function App() {
         headers: { Authorization: "Bearer " + token },
       })) as { taskId: string; project: Project; message: string };
       
-      // Refresh balance
+      // Refresh balance and latest config
       const me = (await apiRequest("/api/v1/auth/me", {
         headers: { Authorization: "Bearer " + token },
       })) as AuthResponseUser;
@@ -361,36 +395,43 @@ function App() {
       setTaskStatus("running");
       setTaskLogs(logs => [...logs, `[System] 启动项目: ${project.name}`, `[System] 任务 ID: ${data.taskId}`, `[System] 正在启动引擎...`]);
 
-      // 3. Resolve Effective Config
-      let provider = user?.llmProvider || 'TaskMaster';
-      let model = user?.llmModel || 'auto';
-      let apiKey = user?.llmApiKey || '';
-      let baseURL = user?.llmBaseUrl || '';
+      // 3. Resolve Effective Config using the latest user data from DB
+      // FORCE TaskMaster logic for now since we simplified settings
+      let provider = 'openai'; 
+      let model = me.llmModel || 'google/gemini-3-flash-preview';
+      let apiKey = me.llmApiKey || '';
+      let baseURL = me.llmBaseUrl || 'https://openrouter.ai/api/v1';
 
-      if (provider === 'TaskMaster') {
-          provider = 'openai';
-          if (model === 'auto') {
-              model = 'google/gemini-2.0-flash-exp:free';
-          }
-          if (!baseURL) baseURL = 'https://openrouter.ai/api/v1';
+      if (model === 'auto') {
+          model = 'google/gemini-3-flash-preview';
       }
 
       // 4. Spawn Sidecar
       const command = Command.sidecar("binaries/hyperagent");
+      
       command.on('close', d => {
         const finalStatus = d.code === 0 ? "completed" : "failed";
         setTaskLogs(logs => [...logs, `[System] 执行结束，退出码: ${d.code}`]);
         setTaskStatus(finalStatus);
         setLoading(false);
-        updateTaskStatus(data.taskId, finalStatus);
+        updateTaskStatus(data.taskId, finalStatus, currentResult);
       });
+
       command.on('error', err => {
         setTaskLogs(logs => [...logs, `[System] 错误: ${err}`]);
         setTaskStatus("failed");
         setLoading(false);
         updateTaskStatus(data.taskId, "failed");
       });
-      command.stdout.on('data', line => setTaskLogs(logs => [...logs, `[OUT] ${line}`]));
+
+      command.stdout.on('data', line => {
+          if (line.startsWith('{') && line.includes('status')) {
+              currentResult = line;
+              setLastResultData(line);
+          }
+          setTaskLogs(logs => [...logs, `[OUT] ${line}`]);
+      });
+
       command.stderr.on('data', line => setTaskLogs(logs => [...logs, `[LOG] ${line}`]));
 
       const child = await command.spawn();
@@ -458,14 +499,21 @@ function App() {
       e.preventDefault();
       setLoading(true);
       try {
+          // IMPORTANT: Only send the fields that are visible/editable.
+          // By not sending llmApiKey and llmBaseUrl, the backend will preserve existing values.
+          const payload = {
+              llmProvider: "TaskMaster", 
+              llmModel: "auto"
+          };
           await apiRequest("/api/v1/users/settings", {
               method: "PATCH",
-              body: JSON.stringify({ llmProvider, llmModel, llmApiKey, llmBaseUrl }),
+              body: JSON.stringify(payload),
               headers: { Authorization: "Bearer " + token },
           });
-          if (user) {
-              setUser({ ...user, llmProvider, llmModel, llmApiKey, llmBaseUrl });
-          }
+          
+          // Refresh user data from server to sync the hidden fields too
+          await loadMe(token);
+          
           showAlert("保存成功", "您的 AI 模型配置已更新。");
       } catch (e) {
           showAlert("保存失败", "无法更新设置。");
@@ -614,7 +662,7 @@ function App() {
                      </div>
                   </div>
                   <div className="lg:col-span-1">
-                     <button onClick={() => setIsProjectModalOpen(true)} className="w-full h-full min-h-[160px] rounded-xl bg-surface-light dark:bg-surface-dark border-2 border-dashed border-slate-300 dark:border-slate-700 flex flex-col items-center justify-center gap-3 hover:border-accent-blue transition-all group">
+                     <button onClick={handleOpenCreateModal} className="w-full h-full min-h-[160px] rounded-xl bg-surface-light dark:bg-surface-dark border-2 border-dashed border-slate-300 dark:border-slate-700 flex flex-col items-center justify-center gap-3 hover:border-accent-blue transition-all group">
                         <div className="size-12 rounded-full bg-gradient-primary flex items-center justify-center text-white shadow-lg group-hover:scale-110 transition-transform"><span className="material-symbols-outlined" style={{ fontSize: "28px" }}>add</span></div>
                         <span className="text-lg font-bold text-slate-700 dark:text-slate-300 group-hover:text-accent-blue">新建项目</span>
                      </button>
@@ -633,7 +681,7 @@ function App() {
                            <p className="text-xs text-slate-500 line-clamp-2 h-8">{p.prompt}</p>
                            <div className="flex gap-2 mt-2">
                               <button onClick={() => handleExecuteProject(p)} className="flex-1 bg-blue-50 dark:bg-blue-900/20 text-accent-blue px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-100 transition-colors">执行</button>
-                              <button onClick={() => { setActiveProject(p); setDashView('projects'); }} className="px-3 py-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold transition-colors">管理</button>
+                              <button onClick={() => { handleOpenEditModal(p); setDashView('projects'); }} className="px-3 py-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold transition-colors">管理</button>
                            </div>
                         </div>
                      ))}
@@ -646,7 +694,7 @@ function App() {
              <div className="mx-auto max-w-7xl flex flex-col gap-6">
                 <div className="flex justify-between items-center">
                    <h3 className="text-xl font-bold">项目列表</h3>
-                   <button onClick={() => setIsProjectModalOpen(true)} className="bg-gradient-primary text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>add</span>新建项目</button>
+                   <button onClick={handleOpenCreateModal} className="bg-gradient-primary text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>add</span>新建项目</button>
                 </div>
                 <div className="grid grid-cols-1 gap-4">
                    {projectsList.length === 0 ? <div className="text-center py-20 text-slate-500 bg-surface-light dark:bg-surface-dark rounded-xl border border-dashed border-slate-300 dark:border-slate-700">尚未创建项目</div> : projectsList.map(p => (
@@ -657,6 +705,7 @@ function App() {
                          </div>
                          <div className="flex gap-3">
                             <button onClick={() => handleExecuteProject(p)} className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-blue-700 transition-colors shadow-sm"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>play_arrow</span>启动</button>
+                            <button onClick={() => handleOpenEditModal(p)} className="p-2 rounded-lg text-slate-400 hover:text-accent-blue hover:bg-blue-50 dark:hover:bg-red-900/20 transition-colors"><span className="material-symbols-outlined">edit</span></button>
                             <button onClick={() => handleDeleteProject(p.id)} className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"><span className="material-symbols-outlined">delete</span></button>
                          </div>
                       </div>
@@ -685,6 +734,15 @@ function App() {
                          </div>
                     </div>
                 </div>
+                {/* Result Section */}
+                {lastResultData && (
+                    <div className="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800">
+                        <h3 className="text-lg font-bold mb-4 flex items-center gap-2"><span className="material-symbols-outlined text-emerald-500">data_object</span>执行结果</h3>
+                        <div className="bg-slate-50 dark:bg-slate-900 rounded-lg p-4 font-mono text-xs overflow-x-auto text-slate-900 dark:text-emerald-400">
+                            <pre>{JSON.stringify(JSON.parse(lastResultData), null, 2)}</pre>
+                        </div>
+                    </div>
+                )}
                 <div className="flex-1 rounded-xl bg-[#1e1e1e] shadow-sm border border-slate-800 flex flex-col overflow-hidden min-h-[300px]">
                     <div className="flex items-center justify-between px-4 py-2 bg-[#252526] border-b border-[#333]"><div className="flex items-center gap-2 text-slate-300 text-xs font-medium uppercase tracking-wider"><span className="material-symbols-outlined" style={{ fontSize: "16px" }}>terminal</span>实时日志</div><div className="flex items-center gap-2"><span className={`size-2 rounded-full ${taskStatus === 'running' ? 'bg-green-500 animate-pulse' : 'bg-slate-500'}`}></span><span className="text-xs text-slate-400">{taskStatus === 'running' ? 'Live' : 'Stopped'}</span></div></div>
                     <div className="flex-1 overflow-y-auto p-4 font-mono text-[11px] text-slate-300 leading-relaxed scroll-smooth">{taskLogs.length === 0 && <span className="text-slate-500 italic">Waiting for logs...</span>}{taskLogs.map((log, i) => (<div key={i} className="mb-1 break-words whitespace-pre-wrap">{log}</div>))}<div ref={logsEndRef} /></div>
@@ -711,9 +769,12 @@ function App() {
                                      <td className="px-6 py-4 font-medium text-slate-900 dark:text-white">{Math.abs(task.cost)}</td>
                                      <td className="px-6 py-4 text-xs text-slate-500">{new Date(task.createdAt).toLocaleString()}</td>
                                      <td className="px-6 py-4 text-right">
-                                         <button onClick={() => handleDeleteTask(task.id)} className="p-1.5 rounded-md text-slate-400 hover:text-red-500 transition-colors" title="删除记录">
-                                             <span className="material-symbols-outlined" style={{ fontSize: "18px" }}>delete</span>
-                                         </button>
+                                         <div className="flex justify-end gap-2">
+                                             {task.result && (
+                                                 <button onClick={() => { setLastResultData(task.result); setDashView('task_detail'); }} className="p-1.5 rounded-md text-slate-400 hover:text-emerald-500" title="查看结果"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>description</span></button>
+                                             )}
+                                             <button onClick={() => handleDeleteTask(task.id)} className="p-1.5 rounded-md text-slate-400 hover:text-red-500 transition-colors" title="删除记录"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>delete</span></button>
+                                         </div>
                                      </td>
                                  </tr>
                              ))}
@@ -784,45 +845,17 @@ function App() {
                                     onChange={(e) => setLlmProvider(e.target.value)}
                                   >
                                       <option value="TaskMaster">TaskMaster (强烈推荐)</option>
-                                      <option value="openai">OpenAI</option>
-                                      <option value="qwen">通义千问</option>
-                                      <option value="deepseek">DeepSeek</option>
                                   </select>
                               </div>
                               <div>
                                   <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">指定模型</label>
                                   <input 
                                     type="text" 
-                                    className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-accent-blue/20"
-                                    placeholder="例如：auto"
-                                    value={llmModel} 
-                                    onChange={(e) => setLlmModel(e.target.value)} 
+                                    className="w-full rounded-xl border border-slate-300 bg-slate-200 p-3 text-sm dark:bg-slate-700 dark:border-slate-600 text-slate-500 dark:text-slate-400 focus:outline-none cursor-not-allowed"
+                                    value="auto" 
+                                    readOnly
                                   />
                               </div>
-                          </div>
-                          <div>
-                              <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">API 基准地址 (Base URL)</label>
-                              <input 
-                                type="url" 
-                                className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-accent-blue/20"
-                                placeholder="https://api.openai.com/v1"
-                                value={llmBaseUrl} 
-                                onChange={(e) => setLlmBaseUrl(e.target.value)} 
-                              />
-                          </div>
-                          <div>
-                              <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">API 密钥 (API Key)</label>
-                              <div className="relative">
-                                  <input 
-                                    type="password" 
-                                    className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-accent-blue/20 pr-10"
-                                    placeholder="sk-..."
-                                    value={llmApiKey} 
-                                    onChange={(e) => setLlmApiKey(e.target.value)} 
-                                  />
-                                  <span className="absolute right-3 top-1/2 -translate-y-1/2 material-symbols-outlined text-slate-400 pointer-events-none" style={{ fontSize: '20px' }}>key</span>
-                              </div>
-                              <p className="mt-2 text-xs text-slate-500">密钥将加密存储在服务器中，仅用于执行您的自动化任务。</p>
                           </div>
                           <div className="flex justify-end">
                               <button type="submit" disabled={loading} className="bg-gradient-primary text-white px-8 py-2.5 rounded-xl text-sm font-bold shadow-lg hover:scale-[1.02] transition-transform">保存配置</button>
@@ -847,15 +880,15 @@ function App() {
       {isProjectModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
            <div className="w-full max-w-lg rounded-xl bg-surface-light dark:bg-surface-dark p-6 shadow-2xl border border-slate-200 dark:border-slate-800 scale-100 animate-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto">
-              <div className="mb-6 flex items-center justify-between"><h3 className="text-xl font-bold text-slate-900 dark:text-white">新建自动化项目</h3><button onClick={() => setIsProjectModalOpen(false)} className="rounded-full p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"><span className="material-symbols-outlined">close</span></button></div>
-              <form onSubmit={handleCreateProject} className="flex flex-col gap-4">
+              <div className="mb-6 flex items-center justify-between"><h3 className="text-xl font-bold text-slate-900 dark:text-white">{isEditing ? "修改自动化项目" : "新建自动化项目"}</h3><button onClick={() => setIsProjectModalOpen(false)} className="rounded-full p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"><span className="material-symbols-outlined">close</span></button></div>
+              <form onSubmit={handleSubmitProject} className="flex flex-col gap-4">
                  <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">项目名称</label><input type="text" className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" placeholder="例如：每日竞品抓取" value={projectName} onChange={(e) => setProjectName(e.target.value)} required /></div>
                  <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">任务类型</label><div className="flex gap-4"><button type="button" onClick={() => setProjectType('workflow')} className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${projectType === 'workflow' ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
 ><span className="text-sm font-bold text-slate-900 dark:text-white">自动工作流</span><span className="text-[10px] text-slate-500">执行复杂交互自动化</span></button><button type="button" onClick={() => setProjectType('scrape')} className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${projectType === 'scrape' ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
 ><span className="text-sm font-bold text-slate-900 dark:text-white">网页抓取</span><span className="text-[10px] text-slate-500">提取结构化数据</span></button></div></div>
                  <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">起始 URL</label><input type="url" className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" placeholder="https://..." value={projectUrl} onChange={(e) => setProjectUrl(e.target.value)} /></div>
                  <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">AI 提示词 (Prompt)</label><textarea className="w-full rounded-lg border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" rows={4} placeholder="描述需要自动完成的操作步骤..." value={projectPrompt} onChange={(e) => setProjectPrompt(e.target.value)} required /></div>
-                 <div className="mt-4 flex justify-end gap-3"><button type="button" onClick={() => setIsProjectModalOpen(false)} className="px-4 py-2 text-sm font-medium text-slate-500">取消</button><button type="submit" disabled={loading} className="bg-gradient-primary text-white px-6 py-2 rounded-lg text-sm font-bold shadow-lg">{loading ? "处理中..." : "保存项目"}</button></div>
+                 <div className="mt-4 flex justify-end gap-3"><button type="button" onClick={() => setIsProjectModalOpen(false)} className="px-4 py-2 text-sm font-medium text-slate-500">取消</button><button type="submit" disabled={loading} className="bg-gradient-primary text-white px-6 py-2 rounded-lg text-sm font-bold shadow-lg">{loading ? "处理中..." : (isEditing ? "保存修改" : "保存项目")}</button></div>
               </form>
            </div>
         </div>

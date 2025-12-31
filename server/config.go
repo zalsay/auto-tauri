@@ -13,6 +13,10 @@ import (
 	"gorm.io/gorm"
 )
 
+var globalDB *gorm.DB
+var redisClient *redis.Client
+var jwtSecret = []byte(GetEnv("JWT_SECRET", "your-secret-key"))
+
 func GetEnv(key, defaultValue string) string {
 	value := os.Getenv(key)
 	if value == "" {
@@ -48,7 +52,7 @@ func LoadDatabaseConfig() DatabaseConfig {
 	}
 }
 
-func InitDatabase() (*gorm.DB, error) {
+func initDB() error {
 	cfg := LoadDatabaseConfig()
 	dsn := fmt.Sprintf(
 		"host=%s user=%s password=%s dbname=%s port=%s sslmode=%s TimeZone=%s",
@@ -63,19 +67,20 @@ func InitDatabase() (*gorm.DB, error) {
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	sqlDB, err := db.DB()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	sqlDB.SetMaxIdleConns(10)
 	sqlDB.SetMaxOpenConns(50)
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 
-	return db, nil
+	globalDB = db
+	return AutoMigrate(globalDB)
 }
 
 type RedisConfig struct {
@@ -96,7 +101,7 @@ func LoadRedisConfig() RedisConfig {
 	}
 }
 
-func InitRedis() (*redis.Client, error) {
+func initRedis() {
 	cfg := LoadRedisConfig()
 	client := redis.NewClient(&redis.Options{
 		Addr:     cfg.Addr,
@@ -106,7 +111,8 @@ func InitRedis() (*redis.Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, err
+		redisClient = nil
+		return
 	}
-	return client, nil
+	redisClient = client
 }
