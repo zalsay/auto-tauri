@@ -95,8 +95,8 @@ func LoadRedisConfig() RedisConfig {
 		dbIndex = 0
 	}
 	return RedisConfig{
-		Addr:     GetEnv("REDIS_ADDR", "localhost:6379"),
-		Password: GetEnv("REDIS_PASSWORD", ""),
+		Addr:     GetEnv("REDIS_ADDR", "go-api.meetlife.com.cn:60379"),
+		Password: GetEnv("REDIS_PASSWORD", "redis_CpfaGN"),
 		DB:       dbIndex,
 	}
 }

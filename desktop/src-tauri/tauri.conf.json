@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "任务大师 仪表盘",
-        "width": 800,
-        "height": 600
+        "width": 1280,
+        "height": 800
       }
     ],
     "security": {

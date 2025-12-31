@@ -72,6 +72,14 @@ type TaskStatusUpdateRequest struct {
 	Result string `json:"result"`
 }
 
+type TaskCompleteRequest struct {
+	Status     string `json:"status"`
+	Result     string `json:"result"`
+	StepsCount int    `json:"stepsCount"`
+}
+
+const costPerStep = int64(1)
+
 type ChangePasswordRequest struct {
 	OldPassword string `json:"oldPassword" binding:"required"`
 	NewPassword string `json:"newPassword" binding:"required"`
@@ -109,8 +117,8 @@ func runWithUserLockAndTx(userID string, fn func(tx *gorm.DB) error) error {
 
 func meHandler(c *gin.Context) {
 	userID := c.MustGet("userID").(string)
-	var user User
-	if err := globalDB.Where("id = ?", userID).First(&user).Error; err != nil {
+	user, err := GetUserWithCache(userID)
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "user_not_found"})
 		return
 	}
@@ -137,10 +145,11 @@ func registerHandler(c *gin.Context) {
 		Email:        req.Email,
 		PasswordHash: string(hash),
 		LLMProvider:  "TaskMaster",
-		LLMModel:     "google/gemini-3-flash-preview",
+		LLMModel:     "google/gemini-2.0-flash-exp:free",
 		LLMBaseURL:   "https://openrouter.ai/api/v1",
+		Balance:      1000,
 	}
-	if err := globalDB.Create(&user).Error; err != nil {
+	if err := CreateUserWithCache(&user); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_create_user"})
 		return
 	}
@@ -153,8 +162,8 @@ func loginHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
 		return
 	}
-	var user User
-	if err := globalDB.Where("email = ?", req.Email).First(&user).Error; err != nil {
+	user, err := GetUserByEmailWithCache(req.Email)
+	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
 		return
 	}
@@ -209,6 +218,7 @@ func rechargeHandler(c *gin.Context) {
 		tx.Create(&Transaction{ID: uuid.NewString(), UserID: userID, Amount: req.Amount, Type: "recharge", Description: req.Description})
 		return nil
 	})
+	InvalidateUserCacheByID(userID)
 	var user User
 	globalDB.Where("id = ?", userID).First(&user)
 	c.JSON(http.StatusOK, gin.H{"balance": user.Balance})
@@ -243,6 +253,7 @@ func changePasswordHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_update_password"})
 		return
 	}
+	InvalidateUserCacheByID(userID)
 
 	c.JSON(http.StatusOK, gin.H{"message": "password_changed"})
 }
@@ -273,6 +284,7 @@ func updateUserSettingsHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_update_settings"})
 		return
 	}
+	InvalidateUserCacheByID(userID)
 
 	c.JSON(http.StatusOK, gin.H{"message": "settings_updated"})
 }
@@ -342,14 +354,14 @@ func deleteProjectHandler(c *gin.Context) {
 func executeProjectHandler(c *gin.Context) {
 	userID := c.MustGet("userID").(string)
 	projectID := c.Param("id")
-	
+
 	var project Project
 	if err := globalDB.Where("id = ? AND user_id = ?", projectID, userID).First(&project).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "project_not_found"})
 		return
 	}
 
-	taskCost := int64(10)
+	taskCost := int64(0)
 	taskID := uuid.NewString()
 
 	err := runWithUserLockAndTx(userID, func(tx *gorm.DB) error {
@@ -361,7 +373,7 @@ func executeProjectHandler(c *gin.Context) {
 		user.Balance -= taskCost
 		tx.Save(&user)
 		tx.Create(&Transaction{ID: uuid.NewString(), UserID: userID, Amount: -taskCost, Type: "consume"})
-		
+
 		task := Task{
 			ID:        taskID,
 			ProjectID: projectID,
@@ -425,4 +437,77 @@ func deleteTaskHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "task_deleted"})
+}
+
+func completeTaskHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	taskID := c.Param("id")
+
+	var req TaskCompleteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		return
+	}
+
+	// Calculate cost based on steps (minimum 10 credits)
+	stepsCount := int64(req.StepsCount)
+	if stepsCount < 1 {
+		stepsCount = 1
+	}
+	taskCost := stepsCount * costPerStep
+
+	var finalBalance int64
+
+	err := runWithUserLockAndTx(userID, func(tx *gorm.DB) error {
+		var user User
+		if err := tx.Where("id = ?", userID).First(&user).Error; err != nil {
+			return err
+		}
+		if user.Balance < taskCost {
+			return errInsufficientBalance
+		}
+
+		user.Balance -= taskCost
+		if err := tx.Save(&user).Error; err != nil {
+			return err
+		}
+		finalBalance = user.Balance
+
+		// Record transaction
+		tx.Create(&Transaction{
+			ID:          uuid.NewString(),
+			UserID:      userID,
+			Amount:      -taskCost,
+			Type:        "consume",
+			Description: "Task " + taskID + " (" + string(rune(req.StepsCount)) + " steps)",
+		})
+
+		// Update task
+		updates := map[string]interface{}{
+			"status": req.Status,
+			"cost":   taskCost,
+		}
+		if req.Result != "" {
+			updates["result"] = req.Result
+		}
+		return tx.Model(&Task{}).Where("id = ? AND user_id = ?", taskID, userID).Updates(updates).Error
+	})
+
+	if err != nil {
+		if err == errInsufficientBalance {
+			c.JSON(http.StatusPaymentRequired, gin.H{"error": "insufficient_balance"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_complete_task"})
+		return
+	}
+
+	InvalidateUserCacheByID(userID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":    "task_completed",
+		"cost":       taskCost,
+		"balance":    finalBalance,
+		"stepsCount": req.StepsCount,
+	})
 }

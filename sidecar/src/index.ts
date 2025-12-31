@@ -34,7 +34,7 @@ function getLLMConfig(input: any) {
     const llm = input.llm || {};
     let provider = llm.provider || input.llmProvider || 'openai';
     let apiKey = llm.apiKey || input.llmApiKey || OPENROUTER_API_KEY;
-    let model = llm.model || input.llmModel || 'google/gemini-3-flash-preview';
+    let model = llm.model || input.llmModel || 'google/gemini-2.0-flash-exp:free';
     let baseURL = llm.baseURL || undefined;
 
     if (!baseURL && (apiKey === OPENROUTER_API_KEY || (apiKey && model.includes('gemini')))) {
@@ -108,10 +108,12 @@ async function handleHyperAgent(input: any, config: any) {
 
         log(`[HyperAgent] 任务完成。`);
         
+        const stepsCount = result?.steps?.length || 0;
         console.log(JSON.stringify({
             taskId: input.taskId,
             status: 'success',
-            data: result
+            data: result,
+            stepsCount: stepsCount
         }));
 
     } catch (e: any) {
@@ -131,18 +133,27 @@ async function handleHyperAgent(input: any, config: any) {
 }
 
 async function handleXHSFlow(input: any, config: any) {
-    log('启动浏览器...');
-    const browser = await chromium.launch({ headless: false });
-    const context = await browser.newContext();
+    log('启动持久化浏览器 (XHS)...');
+    const userDataDir = path.join(os.homedir(), '.auto-tauri', 'browser-profile');
+
+    let context;
     try {
+        context = await chromium.launchPersistentContext(userDataDir, {
+            headless: false,
+            channel: 'chrome',
+            viewport: { width: 1280, height: 800 }
+        });
+        
         const result = await runScraperAndPublish(context, input.url, input.prompt);
         console.log(JSON.stringify({ taskId: input.taskId, status: 'success', data: result }));
     } catch (e: any) {
         log(`错误: ${e.message}`);
         console.log(JSON.stringify({ taskId: input.taskId, status: 'failed', error: e.message }));
     } finally {
-        await sleep(5000);
-        await browser.close();
+        if (context) {
+            await sleep(5000);
+            await context.close();
+        }
     }
 }
 

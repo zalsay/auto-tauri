@@ -61,6 +61,7 @@ func main() {
 			// Tasks
 			auth.GET("/tasks", getTasksHandler)
 			auth.PATCH("/tasks/:id/status", updateTaskStatusHandler)
+			auth.POST("/tasks/:id/complete", completeTaskHandler)
 			auth.DELETE("/tasks/:id", deleteTaskHandler)
 		}
 	}

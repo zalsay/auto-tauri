@@ -55,6 +55,13 @@ type Task struct {
 	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
 }
 
+type LLMConfig struct {
+	Provider string `json:"llmProvider"`
+	Model    string `json:"llmModel"`
+	APIKey   string `json:"llmApiKey"`
+	BaseURL  string `json:"llmBaseUrl"`
+}
+
 func AutoMigrate(db *gorm.DB) error {
 	return db.AutoMigrate(&User{}, &Transaction{}, &Project{}, &Task{})
 }
