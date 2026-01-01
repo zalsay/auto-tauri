@@ -90,6 +90,7 @@ github： git@github.com:zalsay/auto-tauri.git
 - [x] Tauri 项目初始化与 Sidecar 通信。
 - [x] 后端认证 (JWT) 与积分充值系统。
 - [x] Redis 原子锁保护余额变动。
+- [x] **Auto Agents 自动化发布** (Playwright + XHS)。
 
 ### 第三阶段：项目化管理重构（当前任务）
 - [ ] **项目管理 API**
