@@ -48,5 +48,89 @@ export function setStoredToken(token: string) {
 }
 
 export function clearStoredToken() {
+
   window.localStorage.removeItem("auth_token");
+
+}
+
+
+
+export interface Material {
+
+
+
+  id: string;
+
+
+
+  userId: string;
+
+
+
+  projectId?: string;
+
+
+
+  name: string;
+
+
+
+  type: 'text' | 'image' | 'file';
+
+
+
+  content: string;
+
+
+
+  createdAt: string;
+
+
+
+  updatedAt: string;
+
+
+
+}
+
+
+
+export async function getMaterials(token: string): Promise<Material[]> {
+
+    return apiRequest('/api/v1/materials', {
+
+        headers: { Authorization: `Bearer ${token}` },
+
+    }) as Promise<Material[]>;
+
+}
+
+
+
+export async function createMaterial(token: string, data: { name: string; type: string; content: string }): Promise<Material> {
+
+    return apiRequest('/api/v1/materials', {
+
+        method: 'POST',
+
+        headers: { Authorization: `Bearer ${token}` },
+
+        body: JSON.stringify(data),
+
+    }) as Promise<Material>;
+
+}
+
+
+
+export async function deleteMaterial(token: string, id: string): Promise<void> {
+
+    await apiRequest(`/api/v1/materials/${id}`, {
+
+        method: 'DELETE',
+
+        headers: { Authorization: `Bearer ${token}` },
+
+    });
+
 }

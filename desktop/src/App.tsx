@@ -1,89 +1,62 @@
 import { useEffect, useState, useRef } from "react";
 import { apiRequest, clearStoredToken, getStoredToken, setStoredToken } from "./api";
 import { Command } from "@tauri-apps/plugin-shell";
-
-type View = "login" | "register" | "main";
-
-type User = {
-    id: string;
-    email: string;
-    balance: number;
-    llmProvider: string;
-    llmModel: string;
-    llmApiKey: string;
-    llmBaseUrl: string;
-};
-
-type AuthResponseUser = {
-    id: string;
-    email: string;
-    balance: number;
-    llmProvider: string;
-    llmModel: string;
-    llmApiKey: string;
-    llmBaseUrl: string;
-};
-
-type AuthResponse = {
-    token: string;
-    user: AuthResponseUser;
-};
-
-type TaskStatus = "pending" | "running" | "completed" | "failed";
-
-type DashView = "dashboard" | "task_detail" | "projects" | "tasks" | "teams" | "settings";
-
-interface Project {
-    id: string;
-    name: string;
-    url: string;
-    prompt: string;
-    type: string;
-    createdAt: string;
-}
-
-interface Task {
-    id: string;
-    projectId: string;
-    userId: string;
-    prompt: string;
-    type: string;
-    status: string;
-    result: string;
-    cost: number;
-    createdAt: string;
-    updatedAt: string;
-}
-
-interface GlobalModalConfig {
-    isOpen: boolean;
-    title: string;
-    message: string;
-    type: "alert" | "confirm";
-    onConfirm?: () => void;
-    confirmText?: string;
-    confirmColor?: string;
-}
-
+import { convertFileSrc } from "@tauri-apps/api/path";
+import MaterialCenter from "./MaterialCenter";
 function HyperAgentResultDisplay({ data }: { data: any }) {
-    // Try to extract the structured data
-    // The hyperagent output often has a nested data object
-    const result = data?.data || data;
+    console.log("[HyperAgentResultDisplay] Received raw data:", data);
+
+    let structuredData: any = null;
+    const rawString = data?.output || (typeof data === 'string' ? data : null);
+
+    // If the input data contains a messy string in the 'output' field, parse it.
+    if (rawString && typeof rawString === 'string') {
+        const lines = rawString.split('\n');
+        for (const line of lines) {
+            try {
+                const parsed = JSON.parse(line);
+                // Heuristic: The main result object has `taskId` and a `data` object.
+                if (parsed && parsed.taskId && parsed.status === 'success' && parsed.data) {
+                    structuredData = parsed;
+                    console.log("[HyperAgentResultDisplay] Found and parsed structured data line:", structuredData);
+                    break; // Found the main result, stop searching.
+                }
+            } catch (e) {
+                // This line is not a valid JSON, so we ignore it.
+            }
+        }
+    }
+
+    const finalData = structuredData || data;
+    console.log("[HyperAgentResultDisplay] Using final data for rendering:", finalData);
+
+    const result = finalData?.data || finalData;
     const output = result?.output;
     const steps = result?.steps || [];
+    const screenshotUrl = result?.screenshotUrl;
 
-    const isStructured = output || steps.length > 0;
+    const isStructured = output || (steps && steps.length > 0);
 
     if (!isStructured) {
         return (
             <div className="bg-slate-50 dark:bg-slate-900 rounded-lg p-4 font-mono text-xs overflow-x-auto text-slate-900 dark:text-emerald-400">
-                <pre>{JSON.stringify(data, null, 2)}</pre>
+                <pre>{JSON.stringify(finalData, null, 2)}</pre>
             </div>
         );
     }
 
     return (
         <div className="flex flex-col gap-6">
+            {screenshotUrl && (
+                 <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-xl p-5 shadow-sm">
+                    <h4 className="text-sm font-bold text-blue-700 dark:text-blue-400 mb-3 flex items-center gap-2">
+                        <span className="material-symbols-outlined text-lg">screenshot</span>
+                        任务截图
+                    </h4>
+                    <img src={screenshotUrl} alt="Task Screenshot" className="rounded-lg border-2 border-slate-200 dark:border-slate-700 max-w-full h-auto cursor-pointer transition-all hover:scale-[1.02]" onClick={() => window.open(screenshotUrl)} />
+                </div>
+            )}
+
             {output && (
                 <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-xl p-5 shadow-sm">
                     <h4 className="text-sm font-bold text-blue-700 dark:text-blue-400 mb-3 flex items-center gap-2">
@@ -96,7 +69,7 @@ function HyperAgentResultDisplay({ data }: { data: any }) {
                 </div>
             )}
 
-            {steps.length > 0 && (
+            {steps && steps.length > 0 && (
                 <div className="flex flex-col gap-4">
                     <h4 className="text-sm font-bold text-slate-500 dark:text-slate-400 flex items-center gap-2 px-1">
                         <span className="material-symbols-outlined text-lg">format_list_numbered</span>
@@ -129,7 +102,9 @@ function HyperAgentResultDisplay({ data }: { data: any }) {
                                 <div className="p-4 space-y-3">
                                     {step.agentOutput?.thoughts && (
                                         <div className="flex gap-3 items-start">
-                                            <span className="material-symbols-outlined text-slate-400 mt-0.5" style={{ fontSize: '18px' }}>psychology</span>
+                                            <span className="material-symbols-outlined text-slate-400 mt-0.5" style={{
+                                                fontSize: '18px'
+                                            }}>psychology</span>
                                             <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed italic">
                                                 {step.agentOutput.thoughts}
                                             </p>
@@ -170,13 +145,12 @@ function HyperAgentResultDisplay({ data }: { data: any }) {
                     查看原始数据 (JSON)
                 </summary>
                 <div className="mt-2 bg-slate-50 dark:bg-slate-900 rounded-lg p-4 font-mono text-[10px] overflow-x-auto text-slate-900 dark:text-emerald-400/80 border border-slate-100 dark:border-slate-800">
-                    <pre>{JSON.stringify(data, null, 2)}</pre>
+                    <pre>{JSON.stringify(finalData, null, 2)}</pre>
                 </div>
             </details>
         </div>
     );
 }
-
 function App() {
     const [view, setView] = useState<View>("login");
     const [email, setEmail] = useState("");
@@ -192,6 +166,7 @@ function App() {
     const [projectPrompt, setProjectPrompt] = useState("");
     const [projectUrl, setProjectUrl] = useState("");
     const [projectType, setProjectType] = useState<"workflow" | "scrape">("workflow");
+    const [projectScreenshot, setProjectScreenshot] = useState(false);
     const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
     const [editProjectId, setEditProjectId] = useState<string | null>(null);
@@ -398,7 +373,7 @@ function App() {
         e.preventDefault();
         setLoading(true);
         try {
-            const body = JSON.stringify({ name: projectName, url: projectUrl, prompt: projectPrompt, type: projectType });
+            const body = JSON.stringify({ name: projectName, url: projectUrl, prompt: projectPrompt, type: projectType, screenshot: projectScreenshot });
             if (isEditing && editProjectId) {
                 await apiRequest(`/api/v1/projects/${editProjectId}`, {
                     method: "PUT",
@@ -420,6 +395,7 @@ function App() {
             setProjectName("");
             setProjectUrl("");
             setProjectPrompt("");
+            setProjectScreenshot(false);
             loadProjects();
         } catch (e) {
             showAlert("操作失败", "无法保存项目配置。");
@@ -435,6 +411,7 @@ function App() {
         setProjectUrl("");
         setProjectPrompt("");
         setProjectType("workflow");
+        setProjectScreenshot(false);
         setIsProjectModalOpen(true);
     }
 
@@ -445,6 +422,7 @@ function App() {
         setProjectUrl(p.url);
         setProjectPrompt(p.prompt);
         setProjectType(p.type as any);
+        setProjectScreenshot(p.screenshot);
         setIsProjectModalOpen(true);
     }
 
@@ -483,10 +461,11 @@ function App() {
         setLastResultData("");
         setActiveProject(project);
 
-        // Persistent refs to use in event handlers
-        let currentResult = "";
-
         try {
+            // Persistent refs to use in event handlers
+            let finalStructuredResult = ""; // Stores the last detected structured JSON result
+            let finalPlainTextResult = ""; // Stores all plain text output/logs
+
             // 1. Start execution on backend
             const data = (await apiRequest(`/api/v1/projects/${project.id}/execute`, {
                 method: "POST",
@@ -542,57 +521,103 @@ function App() {
             // 4. Spawn Sidecar
             const command = Command.sidecar("binaries/hyperagent");
 
+            // Attach listeners
+            console.log('[handleExecuteProject] Attaching sidecar event listeners...');
+            
             command.on('close', async (d) => {
+                console.log(`[handleExecuteProject] 'close' event fired with code: ${d.code}`);
                 const finalStatus = d.code === 0 ? "completed" : "failed";
                 setTaskLogs(logs => [...logs, `[System] 执行结束，退出码: ${d.code}`]);
                 setTaskStatus(finalStatus);
                 setLoading(false);
 
-                // Parse stepsCount from sidecar result
+                // Decide which result to send/display
+                const resultToSend = finalStructuredResult || finalPlainTextResult;
+                console.log('[handleExecuteProject] Final result determined for sending:', resultToSend);
+
+                // Parse stepsCount from sidecar result (attempt to use structured result if available)
                 let stepsCount = 0;
                 try {
-                    const resultObj = JSON.parse(currentResult);
+                    const resultObj = JSON.parse(finalStructuredResult || finalPlainTextResult); // Try parsing structured first
                     stepsCount = resultObj.stepsCount || resultObj.data?.steps?.length || 0;
-                } catch (e) { }
+                } catch (e) { 
+                    // This is expected to fail for non-JSON results, which is fine.
+                }
+                
+                const payload = { status: finalStatus, result: resultToSend, stepsCount };
+                console.log('[handleExecuteProject] Calling completeTask API with payload:', payload);
 
                 // Call complete API to deduct balance
                 try {
                     const completeRes = await apiRequest(`/api/v1/tasks/${data.taskId}/complete`, {
                         method: "POST",
-                        body: JSON.stringify({ status: finalStatus, result: currentResult, stepsCount }),
+                        body: JSON.stringify(payload),
                         headers: { Authorization: "Bearer " + token },
                     }) as { cost: number; balance: number };
                     setTaskLogs(logs => [...logs, `[System] 费用: ${completeRes.cost} credits, 余额: ${completeRes.balance}`]);
                     if (user) setUser({ ...user, balance: completeRes.balance });
+                    console.log('[handleExecuteProject] completeTask API call successful.');
                 } catch (e) {
-                    console.error("Failed to complete task", e);
-                    updateTaskStatus(data.taskId, finalStatus, currentResult);
+                    console.error("[handleExecuteProject] Failed to call completeTask API", e);
+                    // Fallback to update status if complete fails
+                    updateTaskStatus(data.taskId, finalStatus, resultToSend);
                 }
             });
 
             command.on('error', err => {
+                console.error(`[handleExecuteProject] 'error' event fired:`, err);
                 setTaskLogs(logs => [...logs, `[System] 错误: ${err}`]);
                 setTaskStatus("failed");
                 setLoading(false);
-                updateTaskStatus(data.taskId, "failed");
+                // Also send the final captured result/logs to backend
+                const resultToSend = finalStructuredResult || finalPlainTextResult;
+                updateTaskStatus(data.taskId, "failed", resultToSend);
             });
 
+            let stdoutAttached = false;
             command.stdout.on('data', line => {
-                if (line.startsWith('{') && line.includes('status')) {
-                    currentResult = line;
-                    setLastResultData(line);
+                if (!stdoutAttached) {
+                    console.log('[handleExecuteProject] Sidecar stdout handler receiving data.');
+                    stdoutAttached = true;
+                }
+                // Attempt to parse as JSON. If it's structured, prioritize it.
+                try {
+                    const parsed = JSON.parse(line);
+                    // Heuristic: check if it looks like a structured result (e.g., has 'output' or 'steps' or 'message' and 'type')
+                    if (parsed && (parsed.output !== undefined || parsed.steps !== undefined || (parsed.message !== undefined && parsed.type !== undefined))) {
+                        finalStructuredResult = line; // Overwrite, assume this is the latest and most relevant structured result
+                        setLastResultData(line); // Immediately show this formatted result in UI
+                    } else {
+                        // Not a structured JSON result, treat as plain log
+                        finalPlainTextResult += line + "\n";
+                    }
+                } catch (e) {
+                    // Not JSON, append to plain text
+                    finalPlainTextResult += line + "\n";
                 }
                 setTaskLogs(logs => [...logs, `[OUT] ${line}`]);
             });
 
-            command.stderr.on('data', line => setTaskLogs(logs => [...logs, `[LOG] ${line}`]));
-
+            let stderrAttached = false;
+            command.stderr.on('data', line => {
+                if (!stderrAttached) {
+                    console.log('[handleExecuteProject] Sidecar stderr handler receiving data.');
+                    stderrAttached = true;
+                }
+                // For stderr, just accumulate as plain text/logs
+                finalPlainTextResult += line + "\n";
+                setTaskLogs(logs => [...logs, `[LOG] ${line}`]);
+            });
+            
+            console.log('[handleExecuteProject] Spawning sidecar...');
             const child = await command.spawn();
+            console.log('[handleExecuteProject] Sidecar process spawned with PID:', child.pid);
             const payload = {
                 taskId: data.taskId,
                 type: project.type,
                 prompt: project.prompt,
                 url: project.url,
+                screenshot: project.screenshot,
                 llm: {
                     provider,
                     model,
@@ -602,8 +627,8 @@ function App() {
             };
             await child.write(JSON.stringify(payload) + "\n");
             setTaskLogs(logs => [...logs, `[System] 指令已下发，执行模型: ${model}`]);
-
         } catch (e: any) {
+            console.error('[handleExecuteProject] Error during task setup:', e);
             showAlert("任务启动失败", e.message || "无法连接到执行引擎。");
             setLoading(false);
         }
@@ -692,6 +717,7 @@ function App() {
             case 'tasks': return '任务历史';
             case 'teams': return '团队协作';
             case 'settings': return '系统设置';
+            case 'materials': return '素材中心';
             default: return '任务大师';
         }
     };
@@ -709,6 +735,7 @@ function App() {
                     <li><button onClick={() => { setDashView('dashboard'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'dashboard' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">dashboard</span><span className="text-sm font-medium">仪表盘</span></button></li>
                     <li><button onClick={() => { setDashView('projects'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'projects' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">view_kanban</span><span className="text-sm font-medium">项目管理</span></button></li>
                     <li><button onClick={() => { setDashView('tasks'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'tasks' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">history</span><span className="text-sm font-medium">任务历史</span></button></li>
+                    <li><button onClick={() => { setDashView('materials'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'materials' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">topic</span><span className="text-sm font-medium">素材中心</span></button></li>
                     <li><button onClick={() => { setDashView('teams'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'teams' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">group</span><span className="text-sm font-medium">团队协作</span></button></li>
                     <li><button onClick={() => { setDashView('settings'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors group text-left ${dashView === 'settings' ? 'bg-gradient-primary shadow-lg shadow-purple-600/20 text-white' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className={`material-symbols-outlined ${dashView === 'settings' ? 'fill' : 'group-hover:text-accent-blue'}`}>settings</span><span className="text-sm font-medium">设置</span></button></li>
                 </ul>
@@ -1090,6 +1117,9 @@ function App() {
                             <button onClick={() => setDashView('dashboard')} className="mt-4 rounded-lg bg-slate-200 dark:bg-slate-800 px-6 py-2 text-sm font-medium text-slate-700 dark:text-slate-300">返回仪表盘</button>
                         </div>
                     )}
+                    {dashView === 'materials' && (
+                        <MaterialCenter projectsList={projectsList} />
+                    )}
                 </div>
             </main>
 
@@ -1105,6 +1135,10 @@ function App() {
                             ><span className="text-sm font-bold text-slate-900 dark:text-white">网页抓取</span><span className="text-[10px] text-slate-500">提取结构化数据</span></button></div></div>
                             <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">起始 URL</label><input type="url" className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" placeholder="https://..." value={projectUrl} onChange={(e) => setProjectUrl(e.target.value)} /></div>
                             <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">AI 提示词 (Prompt)</label><textarea className="w-full rounded-lg border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" rows={4} placeholder="描述需要自动完成的操作步骤..." value={projectPrompt} onChange={(e) => setProjectPrompt(e.target.value)} required /></div>
+                            <div className="flex items-center">
+                                <input id="screenshot-checkbox" type="checkbox" checked={projectScreenshot} onChange={(e) => setProjectScreenshot(e.target.checked)} className="h-4 w-4 rounded text-blue-600 focus:ring-blue-500" />
+                                <label htmlFor="screenshot-checkbox" className="ml-2 block text-sm text-slate-900 dark:text-slate-300 select-none cursor-pointer">任务结束后截图</label>
+                            </div>
                             <div className="mt-4 flex justify-end gap-3"><button type="button" onClick={() => setIsProjectModalOpen(false)} className="px-4 py-2 text-sm font-medium text-slate-500">取消</button><button type="submit" disabled={loading} className="bg-gradient-primary text-white px-6 py-2 rounded-lg text-sm font-bold shadow-lg">{loading ? "处理中..." : (isEditing ? "保存修改" : "保存项目")}</button></div>
                         </form>
                     </div>

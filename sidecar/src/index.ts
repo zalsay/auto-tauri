@@ -1,6 +1,7 @@
 import * as readline from 'readline';
 import * as path from 'path';
 import * as os from 'os';
+import * as fs from 'fs';
 import { chromium } from 'playwright';
 import { HyperAgent } from "@hyperbrowser/agent";
 import { runScraperAndPublish } from './auto_agents';
@@ -37,7 +38,6 @@ function getLLMConfig(input: any) {
     let model = llm.model || input.llmModel || 'google/gemini-2.0-flash-exp:free';
     let baseURL = llm.baseURL || undefined;
 
-    // Map TaskMaster to openai compatible provider
     if (provider === 'TaskMaster') {
         provider = 'openai';
     }
@@ -46,7 +46,6 @@ function getLLMConfig(input: any) {
         baseURL = 'https://openrouter.ai/api/v1';
     }
 
-    // Force openai provider for OpenRouter compatibility
     if (baseURL && baseURL.includes('openrouter.ai')) {
         provider = 'openai';
     }
@@ -72,23 +71,21 @@ async function handleHyperAgent(input: any, config: any) {
     log(`[HyperAgent] 正在初始化持久化环境...`);
     
     const userDataDir = path.join(os.homedir(), '.auto-tauri', 'browser-profile');
+    const screenshotsDir = path.join(os.homedir(), '.auto-tauri', 'screenshots');
 
     let context;
     try {
-        // 1. 启动持久化上下文
         context = await chromium.launchPersistentContext(userDataDir, {
             headless: false,
             channel: 'chrome',
             viewport: { width: 1280, height: 800 }
         });
 
-        // 重要：获取 launchPersistentContext 默认打开的第一个页面，不要新建
         const pages = context.pages();
         const page = pages.length > 0 ? pages[0] : await context.newPage();
 
         log(`[HyperAgent] 已锁定主窗口。`);
 
-        // 2. 初始化 Agent
         const agent = new HyperAgent({
             llm: {
                 provider: config.provider as any,
@@ -105,25 +102,37 @@ async function handleHyperAgent(input: any, config: any) {
             }
         });
 
-        // 3. 导航到目标 URL
         if (input.url) {
             log(`[HyperAgent] 正在主窗口导航至: ${input.url}`);
             await page.goto(input.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
         }
 
-        // 4. 执行任务指令
         log(`[HyperAgent] 正在执行任务: ${input.prompt}`);
         
-        // 关键修复：显式传入 page 参数给 executeTask，防止它开启新窗口
         const result = await (agent as any).executeTask(input.prompt, {}, page);
 
         log(`[HyperAgent] 任务完成。`);
+        
+        let screenshotPath: string | null = null;
+        if (input.screenshot) {
+            log(`[HyperAgent] 正在执行截图...`);
+            try {
+                if (!fs.existsSync(screenshotsDir)) {
+                    fs.mkdirSync(screenshotsDir, { recursive: true });
+                }
+                screenshotPath = path.join(screenshotsDir, `screenshot-${input.taskId}.png`);
+                await page.screenshot({ path: screenshotPath, fullPage: true });
+                log(`[HyperAgent] 截图已保存至: ${screenshotPath}`);
+            } catch (e: any) {
+                log(`[HyperAgent] 截图失败: ${e.message}`);
+            }
+        }
         
         const stepsCount = result?.steps?.length || 0;
         console.log(JSON.stringify({
             taskId: input.taskId,
             status: 'success',
-            data: result,
+            data: { ...result, screenshotPath },
             stepsCount: stepsCount
         }));
 

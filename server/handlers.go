@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -50,17 +51,19 @@ type RechargeRequest struct {
 }
 
 type ProjectCreateRequest struct {
-	Name   string `json:"name"`
-	URL    string `json:"url"`
-	Prompt string `json:"prompt"`
-	Type   string `json:"type"`
+	Name       string `json:"name"`
+	URL        string `json:"url"`
+	Prompt     string `json:"prompt"`
+	Type       string `json:"type"`
+	Screenshot *bool  `json:"screenshot"`
 }
 
 type ProjectUpdateRequest struct {
-	Name   string `json:"name"`
-	URL    string `json:"url"`
-	Prompt string `json:"prompt"`
-	Type   string `json:"type"`
+	Name       string `json:"name"`
+	URL        string `json:"url"`
+	Prompt     string `json:"prompt"`
+	Type       string `json:"type"`
+	Screenshot *bool  `json:"screenshot"`
 }
 
 type TaskStartResponse struct {
@@ -80,7 +83,15 @@ type TaskCompleteRequest struct {
 	StepsCount int    `json:"stepsCount"`
 }
 
+// SidecarResult defines the structure for parsing the JSON result from the sidecar.
+type SidecarResult struct {
+	Data struct {
+		Output string `json:"output"`
+	} `json:"data"`
+}
+
 const costPerStep = int64(1)
+
 
 type ChangePasswordRequest struct {
 	OldPassword string `json:"oldPassword" binding:"required"`
@@ -321,6 +332,9 @@ func createProjectHandler(c *gin.Context) {
 		Prompt: req.Prompt,
 		Type:   req.Type,
 	}
+	if req.Screenshot != nil {
+		project.Screenshot = *req.Screenshot
+	}
 	if err := globalDB.Create(&project).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_create_project"})
 		return
@@ -342,6 +356,9 @@ func updateProjectHandler(c *gin.Context) {
 		"url":    req.URL,
 		"prompt": req.Prompt,
 		"type":   req.Type,
+	}
+	if req.Screenshot != nil {
+		updates["screenshot"] = *req.Screenshot
 	}
 
 	if err := globalDB.Model(&Project{}).Where("id = ? AND user_id = ?", id, userID).Updates(updates).Error; err != nil {
@@ -470,8 +487,10 @@ func completeTaskHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
 		return
 	}
+	
+	log.Printf("[completeTaskHandler] Received request for TaskID %s: %+v", taskID, req)
 
-	// Calculate cost based on steps (minimum 10 credits)
+
 	stepsCount := int64(req.StepsCount)
 	if stepsCount < 1 {
 		stepsCount = 1
@@ -495,7 +514,6 @@ func completeTaskHandler(c *gin.Context) {
 		}
 		finalBalance = user.Balance
 
-		// Record transaction
 		if err := tx.Create(&Transaction{
 			ID:          uuid.NewString(),
 			UserID:      userID,
@@ -506,7 +524,11 @@ func completeTaskHandler(c *gin.Context) {
 			return err
 		}
 
-		// Update task
+		var task Task
+		if err := tx.Where("id = ? AND user_id = ?", taskID, userID).First(&task).Error; err != nil {
+			return err
+		}
+
 		updates := map[string]interface{}{
 			"status": req.Status,
 			"cost":   taskCost,
@@ -514,7 +536,56 @@ func completeTaskHandler(c *gin.Context) {
 		if req.Result != "" {
 			updates["result"] = req.Result
 		}
-		return tx.Model(&Task{}).Where("id = ? AND user_id = ?", taskID, userID).Updates(updates).Error
+		if err := tx.Model(&task).Updates(updates).Error; err != nil {
+			return err
+		}
+
+		// Auto-save result to material center for any successful task with a result
+		log.Printf("[completeTaskHandler] Condition check: req.Status=='completed' is %t, req.Result!=\"\" is %t", req.Status == "completed", req.Result != "")
+		if req.Status == "completed" && req.Result != "" {
+			
+			var contentToSave string
+			lines := strings.Split(req.Result, "\n")
+
+			for _, line := range lines {
+				var sidecarResult SidecarResult
+				err := json.Unmarshal([]byte(line), &sidecarResult)
+				if err == nil && strings.TrimSpace(sidecarResult.Data.Output) != "" {
+					log.Printf("[completeTaskHandler] Found structured result with 'output' field on line: %s", line)
+					contentToSave = sidecarResult.Data.Output
+					break // Found what we need, stop searching
+				}
+			}
+			
+			if contentToSave != "" {
+				log.Println("[completeTaskHandler] Successfully extracted 'output' field. Saving to material center.")
+				var project Project
+				if err := tx.Where("id = ?", task.ProjectID).First(&project).Error; err == nil {
+					material := Material{
+						ID:        uuid.NewString(),
+						UserID:    userID,
+						ProjectID: &task.ProjectID,
+						Name:      fmt.Sprintf("Result: %s - %s", project.Name, time.Now().Format("2006-01-02 15:04")),
+						Type:      "text",
+						Content:   contentToSave,
+					}
+					if err := tx.Create(&material).Error; err != nil {
+						log.Printf("[completeTaskHandler] ERROR: Failed to auto-save parsed material for task %s: %v", taskID, err)
+					} else {
+						log.Printf("[completeTaskHandler] SUCCESS: Parsed material saved for task %s.", taskID)
+					}
+				} else {
+					log.Printf("[completeTaskHandler] ERROR: Failed to find project %s for auto-saving material", task.ProjectID)
+				}
+			} else {
+				log.Println("[completeTaskHandler] Result was present, but a structured result with a non-empty 'output' field was not found. Skipping material save.")
+			}
+		} else {
+			log.Println("[completeTaskHandler] Condition not met. Skipping material save.")
+		}
+
+
+		return nil
 	})
 
 	if err != nil {
@@ -568,4 +639,48 @@ func getLLMConfigHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, config)
+}
+
+// Material Handlers
+type MaterialCreateRequest struct {
+	Name      string  `json:"name"`
+	Type      string  `json:"type"`
+	Content   string  `json:"content"`
+	ProjectID *string `json:"projectId"`
+}
+
+func createMaterialHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	var req MaterialCreateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		return
+	}
+	material := Material{
+		ID:        uuid.NewString(),
+		UserID:    userID,
+		Name:      req.Name,
+		Type:      req.Type,
+		Content:   req.Content,
+		ProjectID: req.ProjectID,
+	}
+	if err := globalDB.Create(&material).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_create_material"})
+		return
+	}
+	c.JSON(http.StatusCreated, material)
+}
+
+func getMaterialsHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	var materials []Material
+	globalDB.Where("user_id = ?", userID).Order("created_at desc").Find(&materials)
+	c.JSON(http.StatusOK, materials)
+}
+
+func deleteMaterialHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	id := c.Param("id")
+	globalDB.Where("id = ? AND user_id = ?", id, userID).Delete(&Material{})
+	c.JSON(http.StatusOK, gin.H{"message": "material_deleted"})
 }

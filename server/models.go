@@ -38,6 +38,7 @@ type Project struct {
 	URL       string    `gorm:"type:text" json:"url"`
 	Prompt    string    `gorm:"type:text;not null" json:"prompt"`
 	Type      string    `gorm:"size:32;not null;default:'workflow'" json:"type"`
+	Screenshot bool      `gorm:"not null;default:false" json:"screenshot"`
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"createdAt"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
 }
@@ -56,12 +57,61 @@ type Task struct {
 }
 
 type LLMConfig struct {
+
 	Provider string `json:"llmProvider"`
+
 	Model    string `json:"llmModel"`
+
 	APIKey   string `json:"llmApiKey"`
+
 	BaseURL  string `json:"llmBaseUrl"`
+
 }
 
+
+
+type Material struct {
+
+
+
+	ID        string    `gorm:"primaryKey;type:uuid" json:"id"`
+
+
+
+	UserID    string    `gorm:"index;type:uuid;not null" json:"userId"`
+
+
+
+	ProjectID *string   `gorm:"index;type:uuid" json:"projectId"`
+
+
+
+	Name      string    `gorm:"size:255;not null" json:"name"`
+
+
+
+	Type      string    `gorm:"size:32;not null;default:'text'" json:"type"`
+
+
+
+	Content   string    `gorm:"type:text" json:"content"`
+
+
+
+	CreatedAt time.Time `gorm:"autoCreateTime" json:"createdAt"`
+
+
+
+	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
+
+
+
+}
+
+
+
 func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(&User{}, &Transaction{}, &Project{}, &Task{})
+
+	return db.AutoMigrate(&User{}, &Transaction{}, &Project{}, &Task{}, &Material{})
+
 }

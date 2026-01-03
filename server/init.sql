@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS projects (
     url TEXT,
     prompt TEXT NOT NULL,
     type VARCHAR(32) NOT NULL DEFAULT 'workflow',
+    screenshot BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_users_projects FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -58,3 +59,20 @@ CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON transactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
+
+-- Materials Table
+CREATE TABLE IF NOT EXISTS materials (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL,
+    project_id UUID,
+    name VARCHAR(255) NOT NULL,
+    type VARCHAR(32) NOT NULL DEFAULT 'text',
+    content TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_users_materials FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_projects_materials FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_materials_user_id ON materials(user_id);
+CREATE INDEX IF NOT EXISTS idx_materials_project_id ON materials(project_id);
