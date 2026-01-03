@@ -64,3 +64,27 @@ npm run package
 
 Tauri 调用方式：
 在 Rust 主进程中通过 `Command::new_sidecar("hyperagent")` 调用，并通过 stdin/stdout 通信。
+
+## 4. 使用 outputSchema 获取结构化结果示例
+
+HyperAgent 支持通过 `outputSchema`（基于 `zod`）约束 LLM 的输出结构，得到强类型的结构化结果。例如：
+
+```typescript
+import { z } from "zod";
+
+const result = await agent.executeTask(
+  "Navigate to imdb.com, search for 'The Matrix', and extract the movie details",
+  {
+    outputSchema: z.object({
+      director: z.string().describe("The name of the movie director"),
+      releaseYear: z.number().describe("The year the movie was released"),
+      rating: z.string().describe("The IMDb rating of the movie"),
+    }),
+  }
+);
+
+console.log(result.output);
+// { director: "Lana Wachowski, Lilly Wachowski", releaseYear: 1999, rating: "8.7/10" }
+```
+
+在实际项目中，可以将 `outputSchema` 中的字段设计为与业务模型（例如素材中心的 `name`、`content` 等字段）对齐，这样 Sidecar 与后端的集成会更加自然稳定。

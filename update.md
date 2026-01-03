@@ -70,3 +70,16 @@
     - 实现了全自动发布流程，包括文件上传、标题与内容填充，以及最后的“发布”按钮点击。
     - 移除了调试代码和手动确认步骤，实现了完全无人值守的发布。
   - **测试验证**：通过本地 Sidecar 模拟运行，成功完成了从图片读取到小红书发布的完整闭环。
+
+- 2026-01-03：HyperAgent 输出与素材中心字段对齐：
+  - 在 `sidecar/src/index.ts` 中为 HyperAgent 结果增加标准化输出结构。
+  - `data` 中新增 `name`、`content` 字段，并规范化 `output` 字段，便于前端展示与素材中心消费。
+  - 自动携带 `imageUrl`（基于截图上传后的 URL），后端在 `completeTaskHandler` 中会将该字段写入素材中心 `Material.ImageUrls`，可直接用于后续发布，无需再次下载或上传。
+  - 完成 Sidecar 构建验证，确保新格式在打包二进制中生效。
+ - 2026-01-03：HyperAgent 每步截图与素材中心 imageUrls 集成：
+   - 在 `sidecar/src/index.ts` 中启用 `onStep` 回调，对每个 Agent 步骤进行网页截图并上传至 OSS。
+   - 将所有步骤截图（含最终截图）生成 URL 列表，以 JSON 数组形式写入 Sidecar 输出的 `data.imageUrl` 字段。
+   - 后端 `completeTaskHandler` 继续从 `imageUrl` 读取字符串写入 `Material.ImageUrls` 字段，从而在素材中心中持久化一组步骤级截图 URL，满足「任务结束后截图」与过程回溯需求。
+ - 2026-01-04：修复 HyperAgent 获取无障碍树时的字体加载错误：
+   - 在 `sidecar/src/index.ts` 中为 Node 环境全局 `fetch` 增加包装逻辑，拦截 `/snapshot/fonts/...` 路径，改为通过 `fs.readFile` 读取本地字体文件并返回 Node 内置 `Response`，避免 `ERR_INVALID_URL` 异常打断无障碍树与可视化覆盖层渲染。
+   - 当字体文件缺失或内容为空时，返回最小合法 BMFont ASCII 文本而不是空响应，避免上层解析逻辑抛出 `Error: no data provided`，减少执行日志中的噪音报错。

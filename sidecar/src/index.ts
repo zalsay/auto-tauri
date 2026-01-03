@@ -4,8 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import { chromium } from 'playwright';
 import { HyperAgent } from "@hyperbrowser/agent";
-import { runScraperAndPublish } from './auto_agents';
-import { publishToXHS } from './auto_agents/xhs_publish';
+import { z } from 'zod';
 import OSS from 'ali-oss';
 import dotenv from 'dotenv';
 
@@ -14,7 +13,35 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
 
-// Log to confirm if the env var was loaded
+const originalFetch = (globalThis as any).fetch;
+if (typeof originalFetch === 'function') {
+    (globalThis as any).fetch = (async (input: any, init?: any) => {
+        try {
+            if (typeof input === 'string' && input.startsWith('/snapshot/fonts/')) {
+                try {
+                    const buffer = await fs.promises.readFile(input);
+                    const NodeResponse = (globalThis as any).Response;
+                    if (NodeResponse) {
+                        if (buffer && buffer.length > 0) {
+                            return new NodeResponse(buffer);
+                        }
+                        const fallback = 'info face="" size=16\n';
+                        return new NodeResponse(fallback, { status: 200 });
+                    }
+                } catch (e) {
+                    const NodeResponse = (globalThis as any).Response;
+                    if (NodeResponse) {
+                        const fallback = 'info face="" size=16\n';
+                        return new NodeResponse(fallback, { status: 200 });
+                    }
+                }
+            }
+        } catch (e) {
+        }
+        return originalFetch(input as any, init as any);
+    }) as any;
+}
+
 if (process.env.OSS_ACCESS_KEY_ID) {
     console.error(`[dotenv] Successfully loaded OSS_ACCESS_KEY_ID: ${process.env.OSS_ACCESS_KEY_ID.substring(0, 4)}...`);
 } else {
@@ -69,47 +96,13 @@ function getLLMConfig(input: any) {
 async function processTask(input: any) {
     const config = getLLMConfig(input);
 
-    log(`收到任务: ${input.taskId}`);
+    log(`收到任务: ${input.taskId}, 类型: ${input.type}`);
     const maskedApiKey = config.apiKey ? (config.apiKey.length > 8 ? `${config.apiKey.substring(0, 4)}...${config.apiKey.substring(config.apiKey.length - 4)}` : '****') : 'none';
     log(`执行配置: Provider=${config.provider}, Model=${config.model}, BaseURL=${config.baseURL || 'default'}, APIKey=${maskedApiKey}`);
 
-    if (input.type === 'xhs_automation') {
-        await handleXHSFlow(input, config);
-    } else if (input.type === 'xhs_publish') {
-        await handleXHSPublish(input, config);
-    } else {
-        await handleHyperAgent(input, config);
-    }
-}
 
-async function handleXHSPublish(input: any, config: any) {
-    log('启动持久化浏览器 (XHS Publish)...');
-    const userDataDir = path.join(os.homedir(), '.auto-tauri', 'browser-profile');
-
-    let context;
-    try {
-        context = await chromium.launchPersistentContext(userDataDir, {
-            headless: false,
-            channel: 'chrome',
-            viewport: { width: 1280, height: 800 }
-        });
-
-        await publishToXHS(context, {
-            imagePathOrUrl: input.imagePathOrUrl || input.url,
-            title: input.title,
-            content: input.prompt || input.content
-        });
-        
-        console.log(JSON.stringify({ taskId: input.taskId, status: 'success', data: { message: 'Published to XHS' } }));
-    } catch (e: any) {
-        log(`错误: ${e.message}`);
-        console.log(JSON.stringify({ taskId: input.taskId, status: 'failed', error: e.message }));
-    } finally {
-        if (context) {
-            await sleep(5000);
-            await context.close();
-        }
-    }
+    await handleHyperAgent(input, config);
+    
 }
 
 async function handleHyperAgent(input: any, config: any) {
@@ -142,38 +135,106 @@ async function handleHyperAgent(input: any, config: any) {
         }
 
         log(`[HyperAgent] 正在执行任务: ${input.prompt}`);
-        const result = await (agent as any).executeTask(input.prompt, {}, page);
-        log(`[HyperAgent] 任务完成。`);
+
+        const materialNameFallback = `Result: ${input.taskId} - ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
+
+        const ossConfig = input.oss || {};
+        const shouldScreenshot = !!input.screenshot;
+        let ossClient: any = null;
+        let screenshotFailed = false;
+        const stepScreenshotUrls: string[] = [];
+
+        const ensureOssClient = async () => {
+            if (ossClient) return ossClient;
+            const client = new OSS({
+                region: ossConfig.region || process.env.OSS_REGION,
+                accessKeyId: ossConfig.accessKeyId || process.env.OSS_ACCESS_KEY_ID,
+                accessKeySecret: ossConfig.accessKeySecret || process.env.OSS_ACCESS_KEY_SECRET,
+                bucket: ossConfig.bucket || process.env.OSS_BUCKET,
+            });
+            ossClient = client;
+            return client;
+        };
+
+        const result = await (agent as any).executeTask(
+            input.prompt,
+            {
+                outputSchema: z.object({
+                    name: z.string().describe("素材标题，适合作为素材中心名称字段"),
+                    content: z.string().describe("素材正文内容，用于素材中心内容字段"),
+                }),
+                enableVisualMode: shouldScreenshot,
+                onStep: shouldScreenshot
+                    ? async (step: any) => {
+                        if (screenshotFailed) {
+                            return;
+                        }
+                        try {
+                            const client = await ensureOssClient();
+                            const imageBuffer = await page.screenshot({ fullPage: true });
+                            const objectName = `screenshots/${input.taskId}/step-${step.idx}-${Date.now()}.png`;
+                            const uploadResult = await client.put(objectName, imageBuffer);
+                            stepScreenshotUrls.push(uploadResult.url);
+                            log(`[HyperAgent] Step ${step.idx} 截图已上传至: ${uploadResult.url}`);
+                        } catch (e: any) {
+                            screenshotFailed = true;
+                            log(`[HyperAgent] Step ${step.idx} 截图或上传失败: ${e.message}`);
+                        }
+                    }
+                    : undefined,
+            },
+            page
+        );
+        log(`[HyperAgent] 任务完成。result: ${JSON.stringify(result)}`);
+
+        const structuredOutput: any = result?.output || {};
+        const materialName = structuredOutput.name || materialNameFallback;
+        const materialContent = structuredOutput.content || JSON.stringify(structuredOutput || result || '');
 
         let screenshotUrl: string | null = null;
-        if (input.screenshot) {
+        if (shouldScreenshot && !screenshotFailed) {
             log(`[HyperAgent] 正在执行截图并上传至OSS...`);
             try {
-                const ossConfig = input.oss || {};
-                const client = new OSS({
-                    region: ossConfig.region || process.env.OSS_REGION,
-                    accessKeyId: ossConfig.accessKeyId || process.env.OSS_ACCESS_KEY_ID,
-                    accessKeySecret: ossConfig.accessKeySecret || process.env.OSS_ACCESS_KEY_SECRET,
-                    bucket: ossConfig.bucket || process.env.OSS_BUCKET,
-                });
-
+                const client = await ensureOssClient();
                 const imageBuffer = await page.screenshot({ fullPage: true });
-                const objectName = `screenshots/screenshot-${input.taskId}.png`;
+                const objectName = `screenshots/${input.taskId}/final-${Date.now()}.png`;
 
                 const uploadResult = await client.put(objectName, imageBuffer);
                 screenshotUrl = uploadResult.url;
+                stepScreenshotUrls.push(uploadResult.url);
                 log(`[HyperAgent] 截图已上传至: ${screenshotUrl}`);
 
             } catch (e: any) {
                 log(`[HyperAgent] 截图或上传失败: ${e.message}`);
+                screenshotFailed = true;
             }
         }
 
         const stepsCount = result?.steps?.length || 0;
+        let imageUrlsForMaterial: string | undefined;
+        if (stepScreenshotUrls.length > 0) {
+            imageUrlsForMaterial = JSON.stringify(stepScreenshotUrls);
+        } else if (screenshotUrl) {
+            imageUrlsForMaterial = JSON.stringify([screenshotUrl]);
+        }
+
+        const dataPayload: any = {
+            ...result,
+            output: materialContent,
+            name: materialName,
+            content: materialContent,
+            structuredOutput,
+            screenshotUrl,
+        };
+
+        if (imageUrlsForMaterial) {
+            dataPayload.imageUrl = imageUrlsForMaterial;
+        }
+
         console.log(JSON.stringify({
             taskId: input.taskId,
             status: 'success',
-            data: { ...result, screenshotUrl },
+            data: dataPayload,
             stepsCount: stepsCount
         }));
 
@@ -193,30 +254,7 @@ async function handleHyperAgent(input: any, config: any) {
     }
 }
 
-async function handleXHSFlow(input: any, config: any) {
-    log('启动持久化浏览器 (XHS)...');
-    const userDataDir = path.join(os.homedir(), '.auto-tauri', 'browser-profile');
 
-    let context;
-    try {
-        context = await chromium.launchPersistentContext(userDataDir, {
-            headless: false,
-            channel: 'chrome',
-            viewport: { width: 1280, height: 800 }
-        });
-
-        const result = await runScraperAndPublish(context, input.url, input.prompt);
-        console.log(JSON.stringify({ taskId: input.taskId, status: 'success', data: result }));
-    } catch (e: any) {
-        log(`错误: ${e.message}`);
-        console.log(JSON.stringify({ taskId: input.taskId, status: 'failed', error: e.message }));
-    } finally {
-        if (context) {
-            await sleep(5000);
-            await context.close();
-        }
-    }
-}
 
 function log(message: string) {
     console.error(JSON.stringify({ type: 'log', message, timestamp: new Date().toISOString() }));

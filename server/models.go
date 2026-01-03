@@ -71,41 +71,15 @@ type LLMConfig struct {
 
 
 type Material struct {
-
-
-
 	ID        string    `gorm:"primaryKey;type:uuid" json:"id"`
-
-
-
 	UserID    string    `gorm:"index;type:uuid;not null" json:"userId"`
-
-
-
 	ProjectID *string   `gorm:"index;type:uuid" json:"projectId"`
-
-
-
 	Name      string    `gorm:"size:255;not null" json:"name"`
-
-
-
 	Type      string    `gorm:"size:32;not null;default:'text'" json:"type"`
-
-
-
+	ImageUrls  string    `gorm:"type:text" json:"imageUrls"`
 	Content   string    `gorm:"type:text" json:"content"`
-
-
-
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"createdAt"`
-
-
-
 	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
-
-
-
 }
 
 

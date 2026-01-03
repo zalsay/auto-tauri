@@ -4,3 +4,4 @@ node_modules/
 desktop/src-tauri/binaries/
 server/server_bin
 binaries/
+test.py

@@ -87,12 +87,13 @@ type TaskCompleteRequest struct {
 // SidecarResult defines the structure for parsing the JSON result from the sidecar.
 type SidecarResult struct {
 	Data struct {
-		Output string `json:"output"`
+		Output        string `json:"output"`
+		ImageUrl      string `json:"imageUrl"`
+		ScreenshotUrl string `json:"screenshotUrl"`
 	} `json:"data"`
 }
 
 const costPerStep = int64(1)
-
 
 type ChangePasswordRequest struct {
 	OldPassword string `json:"oldPassword" binding:"required"`
@@ -176,18 +177,22 @@ func loginHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
 		return
 	}
+	log.Printf("[loginHandler] Login attempt from %s, email=%s", c.ClientIP(), req.Email)
 	user, err := GetUserByEmailWithCache(req.Email)
 	if err != nil {
+		log.Printf("[loginHandler] GetUserByEmailWithCache failed for email=%s: %v", req.Email, err)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		log.Printf("[loginHandler] Password mismatch for email=%s", req.Email)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
 		return
 	}
 	claims := jwt.MapClaims{"sub": user.ID, "exp": time.Now().Add(24 * time.Hour).Unix()}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, _ := token.SignedString(jwtSecret)
+	log.Printf("[loginHandler] Login success userID=%s, email=%s", user.ID, user.Email)
 	c.JSON(http.StatusOK, AuthResponse{
 		Token: tokenString,
 		User: AuthResponseUser{
@@ -489,9 +494,8 @@ func completeTaskHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
 		return
 	}
-	
-	log.Printf("[completeTaskHandler] Received request for TaskID %s: %+v", taskID, req)
 
+	log.Printf("[completeTaskHandler] Received request for TaskID %s: %+v", taskID, req)
 
 	stepsCount := int64(req.StepsCount)
 	if stepsCount < 1 {
@@ -545,8 +549,9 @@ func completeTaskHandler(c *gin.Context) {
 		// Auto-save result to material center for any successful task with a result
 		log.Printf("[completeTaskHandler] Condition check: req.Status=='completed' is %t, req.Result!=\"\" is %t", req.Status == "completed", req.Result != "")
 		if req.Status == "completed" && req.Result != "" {
-			
+
 			var contentToSave string
+			var imageUrlToSave string
 			lines := strings.Split(req.Result, "\n")
 
 			for _, line := range lines {
@@ -555,10 +560,15 @@ func completeTaskHandler(c *gin.Context) {
 				if err == nil && strings.TrimSpace(sidecarResult.Data.Output) != "" {
 					log.Printf("[completeTaskHandler] Found structured result with 'output' field on line: %s", line)
 					contentToSave = sidecarResult.Data.Output
-					break // Found what we need, stop searching
+					if strings.TrimSpace(sidecarResult.Data.ImageUrl) != "" {
+						imageUrlToSave = sidecarResult.Data.ImageUrl
+					} else if strings.TrimSpace(sidecarResult.Data.ScreenshotUrl) != "" {
+						imageUrlToSave = sidecarResult.Data.ScreenshotUrl
+					}
+					break
 				}
 			}
-			
+
 			if contentToSave != "" {
 				log.Println("[completeTaskHandler] Successfully extracted 'output' field. Saving to material center.")
 				if task.ProjectID != nil {
@@ -570,6 +580,7 @@ func completeTaskHandler(c *gin.Context) {
 							ProjectID: task.ProjectID,
 							Name:      fmt.Sprintf("Result: %s - %s", project.Name, time.Now().Format("2006-01-02 15:04")),
 							Type:      "text",
+							ImageUrls: imageUrlToSave,
 							Content:   contentToSave,
 						}
 						if err := tx.Create(&material).Error; err != nil {
@@ -583,11 +594,12 @@ func completeTaskHandler(c *gin.Context) {
 				} else {
 					// Handle case where there is no ProjectID (e.g. direct publish task)
 					material := Material{
-						ID:      uuid.NewString(),
-						UserID:  userID,
-						Name:    fmt.Sprintf("Result: Unnamed Task - %s", time.Now().Format("2006-01-02 15:04")),
-						Type:    "text",
-						Content: contentToSave,
+						ID:        uuid.NewString(),
+						UserID:    userID,
+						Name:      fmt.Sprintf("Result: Unnamed Task - %s", time.Now().Format("2006-01-02 15:04")),
+						Type:      "text",
+						ImageUrls: imageUrlToSave,
+						Content:   contentToSave,
 					}
 					tx.Create(&material)
 				}
@@ -597,7 +609,6 @@ func completeTaskHandler(c *gin.Context) {
 		} else {
 			log.Println("[completeTaskHandler] Condition not met. Skipping material save.")
 		}
-
 
 		return nil
 	})
@@ -760,25 +771,23 @@ func publishMaterialHandler(c *gin.Context) {
 			return errInsufficientBalance
 		}
 
-				task := Task{
+		task := Task{
 
-					ID:        taskID,
+			ID: taskID,
 
-					ProjectID: material.ProjectID,
+			ProjectID: material.ProjectID,
 
-					UserID:    userID,
+			UserID: userID,
 
-					Prompt:    material.Content, // Use material content as prompt/content
+			Prompt: material.Content, // Use material content as prompt/content
 
-					Type:      "xhs_publish",    // Fixed type for now
+			Type: "xhs_publish", // Fixed type for now
 
-					Status:    "running",
+			Status: "running",
 
-					Cost:      taskCost,
+			Cost: taskCost,
+		}
 
-				}
-
-		
 		return tx.Create(&task).Error
 	})
 

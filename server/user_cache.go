@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -118,17 +119,23 @@ func GetUserByEmailWithCache(email string) (*User, error) {
 
 	// Try cache first
 	if user, err := GetUserByEmailFromCache(ctx, email); err == nil {
+		log.Printf("[GetUserByEmailWithCache] Cache hit for email=%s, userID=%s", email, user.ID)
 		return user, nil
 	}
 
 	// Cache miss, query Postgres
 	var user User
 	if err := globalDB.Where("email = ?", email).First(&user).Error; err != nil {
+		log.Printf("[GetUserByEmailWithCache] DB lookup failed for email=%s: %v", email, err)
 		return nil, err
 	}
 
 	// Backfill cache
-	CacheUser(ctx, &user)
+	if err := CacheUser(ctx, &user); err != nil {
+		log.Printf("[GetUserByEmailWithCache] Cache backfill failed for userID=%s, email=%s: %v", user.ID, user.Email, err)
+	} else {
+		log.Printf("[GetUserByEmailWithCache] Cache backfilled for userID=%s, email=%s", user.ID, user.Email)
+	}
 	return &user, nil
 }
 

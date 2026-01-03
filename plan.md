@@ -106,7 +106,9 @@ github： git@github.com:zalsay/auto-tauri.git
 
 ### 第四、五阶段：持久化与优化（待进行）
 - [ ] 结果本地化存储。
-- [ ] 自动化结果展示与导出。
+- [x] 自动化结果展示与导出。
+  - 已为 HyperAgent Sidecar 定义标准化结果结构（含 `output`、`name`、`content` 字段），便于前端展示与素材中心消费。
+  - 已为 HyperAgent 任务启用每步截图与 OSS 上传，并将截图 URL 列表以 JSON 数组形式写入素材中心 `Material.ImageUrls` 字段，用于后续发布与过程回溯。
 - [ ] 性能优化与打包发布。
 
 ---
