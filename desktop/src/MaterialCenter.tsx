@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { getMaterials, createMaterial, deleteMaterial, Material } from './api';
+import { getMaterials, createMaterial, deleteMaterial, publishMaterial, Material } from './api';
 import { getStoredToken } from './api';
 
 // This interface should be in a shared types file, but for now, we define it here.
@@ -11,9 +11,10 @@ interface Project {
 
 interface MaterialCenterProps {
     projectsList: Project[];
+    onPublish: (material: Material, platform: string, title: string, imageUrl: string) => void;
 }
 
-const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList }) => {
+const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish }) => {
     const [materials, setMaterials] = useState<Material[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -21,6 +22,13 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList }) => {
     const [newName, setNewName] = useState('');
     const [newContent, setNewContent] = useState('');
     const [newType, setNewType] = useState<'text' | 'image' | 'file'>('text');
+
+    // Publish Modal State
+    const [isPublishModalOpen, setIsPublishModalOpen] = useState(false);
+    const [selectedMaterial, setSelectedMaterial] = useState<Material | null>(null);
+    const [publishTitle, setPublishTitle] = useState('');
+    const [publishPlatform, setPublishPlatform] = useState('xhs');
+    const [publishImageUrl, setPublishImageUrl] = useState('');
 
     const projectMap = useMemo(() => {
         return new Map(projectsList.map(p => [p.id, p.name]));
@@ -82,6 +90,26 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList }) => {
             } catch (err: any) {
                 setError(err.message || '删除素材失败。');
             }
+        }
+    };
+
+    const openPublishModal = (material: Material) => {
+        setSelectedMaterial(material);
+        setPublishTitle(material.name);
+        setPublishImageUrl(material.type === 'image' ? material.content : '');
+        setIsPublishModalOpen(true);
+    };
+
+    const handlePublishClick = () => {
+        if (selectedMaterial) {
+            if (typeof onPublish !== 'function') {
+                console.error('onPublish is not a function:', onPublish);
+                return;
+            }
+            // If it's an image material, use its content as image URL if not overridden
+            const finalImageUrl = publishImageUrl || (selectedMaterial.type === 'image' ? selectedMaterial.content : '');
+            onPublish(selectedMaterial, publishPlatform, publishTitle, finalImageUrl);
+            setIsPublishModalOpen(false);
         }
     };
 
@@ -171,6 +199,9 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList }) => {
                                 <div className="flex gap-2 mt-2 items-center">
                                     <p className="text-xs text-slate-400">{new Date(material.createdAt).toLocaleDateString()}</p>
                                     <div className="flex-grow"></div>
+                                    <button onClick={() => openPublishModal(material)} className="flex items-center gap-1 bg-blue-50 dark:bg-blue-900/20 text-accent-blue px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-100 transition-colors">
+                                        <span className="material-symbols-outlined text-[16px]">send</span>发布
+                                    </button>
                                     <button onClick={() => handleDeleteMaterial(material.id)} className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
                                         <span className="material-symbols-outlined">delete</span>
                                     </button>
@@ -180,6 +211,65 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList }) => {
                     )}
                 </div>
             </div>
+
+            {/* Publish Modal */}
+            {isPublishModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                    <div className="w-full max-w-md rounded-xl bg-surface-light dark:bg-surface-dark p-6 shadow-2xl border border-slate-200 dark:border-slate-800 scale-100 animate-in zoom-in-95 duration-200">
+                        <div className="mb-6 flex items-center justify-between">
+                            <h3 className="text-xl font-bold text-slate-900 dark:text-white">发布素材</h3>
+                            <button onClick={() => setIsPublishModalOpen(false)} className="rounded-full p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">
+                                <span className="material-symbols-outlined">close</span>
+                            </button>
+                        </div>
+                        <div className="flex flex-col gap-4">
+                            <div>
+                                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">发布平台</label>
+                                <select 
+                                    className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
+                                    value={publishPlatform}
+                                    onChange={(e) => setPublishPlatform(e.target.value)}
+                                >
+                                    <option value="xhs">小红书 (XHS)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">笔记标题</label>
+                                <input 
+                                    type="text" 
+                                    className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
+                                    value={publishTitle}
+                                    onChange={(e) => setPublishTitle(e.target.value)}
+                                    placeholder="输入笔记标题..."
+                                />
+                            </div>
+                            <div>
+                                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                                    图片 URL {selectedMaterial?.type !== 'image' && <span className="text-red-500">*</span>}
+                                </label>
+                                <input 
+                                    type="text" 
+                                    className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
+                                    value={publishImageUrl}
+                                    onChange={(e) => setPublishImageUrl(e.target.value)}
+                                    placeholder="https://..."
+                                />
+                                {selectedMaterial?.type !== 'image' && (
+                                    <p className="text-[10px] text-slate-500 mt-1">小红书发布必须包含图片。由于当前素材是文本，请提供一个图片 URL。</p>
+                                )}
+                            </div>
+                            <div className="bg-slate-50 dark:bg-slate-800 p-3 rounded-lg border border-slate-100 dark:border-slate-700">
+                                <p className="text-xs text-slate-500 mb-1 font-bold">发布内容预览:</p>
+                                <p className="text-xs text-slate-700 dark:text-slate-300 line-clamp-4 italic">{selectedMaterial?.content}</p>
+                            </div>
+                            <div className="mt-4 flex justify-end gap-3">
+                                <button onClick={() => setIsPublishModalOpen(false)} className="px-4 py-2 text-sm font-medium text-slate-500">取消</button>
+                                <button onClick={handlePublishClick} className="bg-gradient-primary text-white px-6 py-2 rounded-lg text-sm font-bold shadow-lg">确认发布</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

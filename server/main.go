@@ -48,6 +48,7 @@ func main() {
 		{
 			auth.GET("/auth/me", meHandler)
 			auth.GET("/llm-config", getLLMConfigHandler)
+			auth.GET("/oss-credentials", getOssCredentialsHandler)
 			auth.POST("/credits/recharge", rechargeHandler)
 			auth.POST("/users/change-password", changePasswordHandler)
 			auth.PATCH("/users/settings", updateUserSettingsHandler)
@@ -69,6 +70,7 @@ func main() {
 			auth.POST("/materials", createMaterialHandler)
 			auth.GET("/materials", getMaterialsHandler)
 			auth.DELETE("/materials/:id", deleteMaterialHandler)
+			auth.POST("/materials/:id/publish", publishMaterialHandler)
 		}
 	}
 

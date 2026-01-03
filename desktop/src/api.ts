@@ -134,3 +134,11 @@ export async function deleteMaterial(token: string, id: string): Promise<void> {
     });
 
 }
+
+export async function publishMaterial(token: string, id: string, data: { platform: string; title: string }): Promise<any> {
+    return apiRequest(`/api/v1/materials/${id}/publish`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: JSON.stringify(data),
+    });
+}

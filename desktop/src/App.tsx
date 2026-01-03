@@ -1,8 +1,67 @@
 import { useEffect, useState, useRef } from "react";
 import { apiRequest, clearStoredToken, getStoredToken, setStoredToken } from "./api";
 import { Command } from "@tauri-apps/plugin-shell";
-import { convertFileSrc } from "@tauri-apps/api/path";
 import MaterialCenter from "./MaterialCenter";
+
+type View = "login" | "register" | "main";
+type DashView = "dashboard" | "projects" | "tasks" | "teams" | "settings" | "materials" | "task_detail";
+type TaskStatus = "pending" | "running" | "completed" | "failed";
+
+interface User {
+    id: string;
+    email: string;
+    balance: number;
+    llmProvider: string;
+    llmModel: string;
+    llmApiKey: string;
+    llmBaseUrl: string;
+}
+
+interface Project {
+    id: string;
+    name: string;
+    url: string;
+    prompt: string;
+    type: string;
+    screenshot: boolean;
+}
+
+interface Task {
+    id: string;
+    projectId: string;
+    type: string;
+    prompt: string;
+    status: string;
+    cost: number;
+    createdAt: string;
+    result?: string;
+}
+
+interface AuthResponseUser {
+    id: string;
+    email: string;
+    balance: number;
+    llmProvider: string;
+    llmModel: string;
+    llmApiKey: string;
+    llmBaseUrl: string;
+}
+
+interface AuthResponse {
+    token: string;
+    user: AuthResponseUser;
+}
+
+interface GlobalModalConfig {
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: "alert" | "confirm";
+    onConfirm?: () => void;
+    confirmText?: string;
+    confirmColor?: string;
+}
+
 function HyperAgentResultDisplay({ data }: { data: any }) {
     console.log("[HyperAgentResultDisplay] Received raw data:", data);
 
@@ -48,7 +107,7 @@ function HyperAgentResultDisplay({ data }: { data: any }) {
     return (
         <div className="flex flex-col gap-6">
             {screenshotUrl && (
-                 <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-xl p-5 shadow-sm">
+                <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-xl p-5 shadow-sm">
                     <h4 className="text-sm font-bold text-blue-700 dark:text-blue-400 mb-3 flex items-center gap-2">
                         <span className="material-symbols-outlined text-lg">screenshot</span>
                         任务截图
@@ -503,7 +562,7 @@ function App() {
                     const systemConfig = await apiRequest("/api/v1/llm-config", {
                         headers: { Authorization: "Bearer " + token },
                     }) as any;
-                    
+
                     if (systemConfig.llmModel) model = systemConfig.llmModel;
                     if (systemConfig.llmBaseUrl) baseURL = systemConfig.llmBaseUrl;
                     if (systemConfig.llmApiKey) apiKey = systemConfig.llmApiKey;
@@ -523,7 +582,7 @@ function App() {
 
             // Attach listeners
             console.log('[handleExecuteProject] Attaching sidecar event listeners...');
-            
+
             command.on('close', async (d) => {
                 console.log(`[handleExecuteProject] 'close' event fired with code: ${d.code}`);
                 const finalStatus = d.code === 0 ? "completed" : "failed";
@@ -540,10 +599,10 @@ function App() {
                 try {
                     const resultObj = JSON.parse(finalStructuredResult || finalPlainTextResult); // Try parsing structured first
                     stepsCount = resultObj.stepsCount || resultObj.data?.steps?.length || 0;
-                } catch (e) { 
+                } catch (e) {
                     // This is expected to fail for non-JSON results, which is fine.
                 }
-                
+
                 const payload = { status: finalStatus, result: resultToSend, stepsCount };
                 console.log('[handleExecuteProject] Calling completeTask API with payload:', payload);
 
@@ -608,10 +667,22 @@ function App() {
                 finalPlainTextResult += line + "\n";
                 setTaskLogs(logs => [...logs, `[LOG] ${line}`]);
             });
-            
+
             console.log('[handleExecuteProject] Spawning sidecar...');
             const child = await command.spawn();
             console.log('[handleExecuteProject] Sidecar process spawned with PID:', child.pid);
+
+            // Fetch OSS Credentials
+            let ossCredentials = null;
+            try {
+                ossCredentials = await apiRequest("/api/v1/oss-credentials", {
+                    headers: { Authorization: "Bearer " + token },
+                });
+                console.log('[handleExecuteProject] Fetched OSS credentials successfully');
+            } catch (e) {
+                console.error('[handleExecuteProject] Failed to fetch OSS credentials, screenshots may fail:', e);
+            }
+
             const payload = {
                 taskId: data.taskId,
                 type: project.type,
@@ -623,7 +694,8 @@ function App() {
                     model,
                     apiKey,
                     baseURL
-                }
+                },
+                oss: ossCredentials
             };
             await child.write(JSON.stringify(payload) + "\n");
             setTaskLogs(logs => [...logs, `[System] 指令已下发，执行模型: ${model}`]);
@@ -696,6 +768,121 @@ function App() {
         } catch (e) {
             showAlert("保存失败", "无法更新设置。");
         } finally {
+            setLoading(false);
+        }
+    }
+
+    async function handlePublishMaterial(material: any, platform: string, title: string, imageUrl: string) {
+        if (!token || !user) return;
+        setLoading(true);
+        setTaskLogs([]);
+        setTaskStatus("pending");
+        setLastResultData("");
+
+        try {
+            // 1. Determine image path (could be local path or URL)
+            const localImagePath = imageUrl || (material.type === 'image' ? material.content : '');
+
+            // 2. Start publish task on backend
+            const data = await apiRequest(`/api/v1/materials/${material.id}/publish`, {
+                method: "POST",
+                body: JSON.stringify({ platform, title }),
+                headers: { Authorization: "Bearer " + token },
+            }) as { taskId: string; material: any; platform: string; title: string; message: string };
+
+            // Refresh balance
+            loadMe(token);
+
+            // 3. Transition UI
+            setActiveTaskId(data.taskId);
+            setActiveProject({ 
+                id: material.id, 
+                name: `Publish: ${material.name}`, 
+                prompt: material.content, 
+                url: localImagePath, 
+                type: 'xhs_publish', 
+                screenshot: false 
+            });
+            setDashView("task_detail");
+            setTaskStatus("running");
+            setTaskLogs(logs => [...logs, `[System] 启动发布任务: ${material.name}`, `[System] 平台: ${platform}`, `[System] 任务 ID: ${data.taskId}`]);
+
+            // 4. Spawn XHS-AGENT Sidecar
+            const command = Command.sidecar("binaries/xhs-agent");
+
+            let finalStructuredResult = "";
+            let finalPlainTextResult = "";
+
+            command.on('close', async (d) => {
+                const finalStatus = d.code === 0 ? "completed" : "failed";
+                setTaskLogs(logs => [...logs, `[System] 执行结束，退出码: ${d.code}`]);
+                setTaskStatus(finalStatus);
+                setLoading(false);
+
+                const resultToSend = finalStructuredResult || finalPlainTextResult;
+                try {
+                    await apiRequest(`/api/v1/tasks/${data.taskId}/complete`, {
+                        method: "POST",
+                        body: JSON.stringify({ status: finalStatus, result: resultToSend, stepsCount: 1 }),
+                        headers: { Authorization: "Bearer " + token },
+                    });
+                } catch (e) {
+                    updateTaskStatus(data.taskId, finalStatus, resultToSend);
+                }
+            });
+
+            command.on('error', err => {
+                setTaskLogs(logs => [...logs, `[System] 错误: ${err}`]);
+                setTaskStatus("failed");
+                setLoading(false);
+                updateTaskStatus(data.taskId, "failed", finalStructuredResult || finalPlainTextResult);
+            });
+
+            command.stdout.on('data', line => {
+                try {
+                    const parsed = JSON.parse(line);
+                    if (parsed && (parsed.status === 'success' || parsed.status === 'failed')) {
+                        finalStructuredResult = line;
+                        setLastResultData(line);
+                    } else {
+                        finalPlainTextResult += line + "\n";
+                    }
+                } catch (e) {
+                    finalPlainTextResult += line + "\n";
+                }
+                setTaskLogs(logs => [...logs, `[OUT] ${line}`]);
+            });
+
+            command.stderr.on('data', line => {
+                // xhs-agent uses console.error for logs
+                try {
+                    const parsed = JSON.parse(line);
+                    if (parsed.type === 'log') {
+                        setTaskLogs(logs => [...logs, `[LOG] ${parsed.message}`]);
+                    } else {
+                        setTaskLogs(logs => [...logs, `[LOG] ${line}`]);
+                    }
+                } catch(e) {
+                    setTaskLogs(logs => [...logs, `[LOG] ${line}`]);
+                }
+                finalPlainTextResult += line + "\n";
+            });
+
+            const child = await command.spawn();
+            
+            // Payload for xhs-agent
+            const payload = {
+                taskId: data.taskId,
+                title: data.title,
+                content: material.content,
+                imagePath: localImagePath // xhs-agent now handles URL downloading
+            };
+            
+            await child.write(JSON.stringify(payload) + "\n");
+            setTaskLogs(logs => [...logs, `[System] 指令已下发，正在启动小红书发布代理...`]);
+
+        } catch (e: any) {
+            showAlert("发布启动失败", e.message || "无法连接到执行引擎。");
             setLoading(false);
         }
     }
@@ -974,7 +1161,7 @@ function App() {
                                                                 if (project) setActiveProject(project);
                                                                 setActiveTaskId(task.id);
                                                                 setTaskStatus(task.status as TaskStatus);
-                                                                setLastResultData(task.result);
+                                                                setLastResultData(task.result || "");
                                                                 setDashView('task_detail');
                                                             }} className="p-1.5 rounded-md text-slate-400 hover:text-emerald-500" title="查看结果"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>description</span></button>
                                                         )}
@@ -1118,7 +1305,7 @@ function App() {
                         </div>
                     )}
                     {dashView === 'materials' && (
-                        <MaterialCenter projectsList={projectsList} />
+                        <MaterialCenter projectsList={projectsList} onPublish={handlePublishMaterial} />
                     )}
                 </div>
             </main>

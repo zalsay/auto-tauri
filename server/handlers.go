@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -350,6 +351,7 @@ func updateProjectHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
 		return
 	}
+	log.Printf("[updateProjectHandler] Received request for project %s: %+v", id, req)
 
 	updates := map[string]interface{}{
 		"name":   req.Name,
@@ -415,7 +417,7 @@ func executeProjectHandler(c *gin.Context) {
 
 		task := Task{
 			ID:        taskID,
-			ProjectID: projectID,
+			ProjectID: &projectID,
 			UserID:    userID,
 			Prompt:    project.Prompt,
 			Type:      project.Type,
@@ -559,23 +561,35 @@ func completeTaskHandler(c *gin.Context) {
 			
 			if contentToSave != "" {
 				log.Println("[completeTaskHandler] Successfully extracted 'output' field. Saving to material center.")
-				var project Project
-				if err := tx.Where("id = ?", task.ProjectID).First(&project).Error; err == nil {
-					material := Material{
-						ID:        uuid.NewString(),
-						UserID:    userID,
-						ProjectID: &task.ProjectID,
-						Name:      fmt.Sprintf("Result: %s - %s", project.Name, time.Now().Format("2006-01-02 15:04")),
-						Type:      "text",
-						Content:   contentToSave,
-					}
-					if err := tx.Create(&material).Error; err != nil {
-						log.Printf("[completeTaskHandler] ERROR: Failed to auto-save parsed material for task %s: %v", taskID, err)
+				if task.ProjectID != nil {
+					var project Project
+					if err := tx.Where("id = ?", *task.ProjectID).First(&project).Error; err == nil {
+						material := Material{
+							ID:        uuid.NewString(),
+							UserID:    userID,
+							ProjectID: task.ProjectID,
+							Name:      fmt.Sprintf("Result: %s - %s", project.Name, time.Now().Format("2006-01-02 15:04")),
+							Type:      "text",
+							Content:   contentToSave,
+						}
+						if err := tx.Create(&material).Error; err != nil {
+							log.Printf("[completeTaskHandler] ERROR: Failed to auto-save parsed material for task %s: %v", taskID, err)
+						} else {
+							log.Printf("[completeTaskHandler] SUCCESS: Parsed material saved for task %s.", taskID)
+						}
 					} else {
-						log.Printf("[completeTaskHandler] SUCCESS: Parsed material saved for task %s.", taskID)
+						log.Printf("[completeTaskHandler] ERROR: Failed to find project %s for auto-saving material", *task.ProjectID)
 					}
 				} else {
-					log.Printf("[completeTaskHandler] ERROR: Failed to find project %s for auto-saving material", task.ProjectID)
+					// Handle case where there is no ProjectID (e.g. direct publish task)
+					material := Material{
+						ID:      uuid.NewString(),
+						UserID:  userID,
+						Name:    fmt.Sprintf("Result: Unnamed Task - %s", time.Now().Format("2006-01-02 15:04")),
+						Type:    "text",
+						Content: contentToSave,
+					}
+					tx.Create(&material)
 				}
 			} else {
 				log.Println("[completeTaskHandler] Result was present, but a structured result with a non-empty 'output' field was not found. Skipping material save.")
@@ -641,12 +655,43 @@ func getLLMConfigHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, config)
 }
 
-// Material Handlers
+// OSSCredentialsResponse defines the structure for returning OSS credentials.
+type OSSCredentialsResponse struct {
+	Region          string `json:"region"`
+	AccessKeyID     string `json:"accessKeyId"`
+	AccessKeySecret string `json:"accessKeySecret"`
+	Bucket          string `json:"bucket"`
+}
+
+func getOssCredentialsHandler(c *gin.Context) {
+	// Ensure that the .env file in the server directory is loaded on startup
+	// This is handled by godotenv.Load() in main.go
+	creds := OSSCredentialsResponse{
+		Region:          os.Getenv("OSS_REGION"),
+		AccessKeyID:     os.Getenv("OSS_ACCESS_KEY_ID"),
+		AccessKeySecret: os.Getenv("OSS_ACCESS_KEY_SECRET"),
+		Bucket:          os.Getenv("OSS_BUCKET"),
+	}
+
+	// Basic validation to ensure they are not all empty
+	if creds.Region == "" || creds.AccessKeyID == "" || creds.AccessKeySecret == "" || creds.Bucket == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "OSS credentials not configured on the server."})
+		return
+	}
+
+	c.JSON(http.StatusOK, creds)
+}
+
 type MaterialCreateRequest struct {
 	Name      string  `json:"name"`
 	Type      string  `json:"type"`
 	Content   string  `json:"content"`
 	ProjectID *string `json:"projectId"`
+}
+
+type PublishMaterialRequest struct {
+	Platform string `json:"platform"`
+	Title    string `json:"title"`
 }
 
 func createMaterialHandler(c *gin.Context) {
@@ -683,4 +728,70 @@ func deleteMaterialHandler(c *gin.Context) {
 	id := c.Param("id")
 	globalDB.Where("id = ? AND user_id = ?", id, userID).Delete(&Material{})
 	c.JSON(http.StatusOK, gin.H{"message": "material_deleted"})
+}
+
+func publishMaterialHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	materialID := c.Param("id")
+
+	var req PublishMaterialRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Printf("[publishMaterialHandler] Error binding JSON: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "details": err.Error()})
+		return
+	}
+	log.Printf("[publishMaterialHandler] Received request: Platform=%s, Title=%s", req.Platform, req.Title)
+
+	var material Material
+	if err := globalDB.Where("id = ? AND user_id = ?", materialID, userID).First(&material).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "material_not_found"})
+		return
+	}
+
+	taskID := uuid.NewString()
+	taskCost := int64(0) // Initial cost is 0, will be deducted on completion
+
+	err := runWithUserLockAndTx(userID, func(tx *gorm.DB) error {
+		var user User
+		if err := tx.Where("id = ?", userID).First(&user).Error; err != nil {
+			return err
+		}
+		if user.Balance < taskCost {
+			return errInsufficientBalance
+		}
+
+				task := Task{
+
+					ID:        taskID,
+
+					ProjectID: material.ProjectID,
+
+					UserID:    userID,
+
+					Prompt:    material.Content, // Use material content as prompt/content
+
+					Type:      "xhs_publish",    // Fixed type for now
+
+					Status:    "running",
+
+					Cost:      taskCost,
+
+				}
+
+		
+		return tx.Create(&task).Error
+	})
+
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"taskId":   taskID,
+		"material": material,
+		"platform": req.Platform,
+		"title":    req.Title,
+		"message":  "发布任务已启动",
+	})
 }

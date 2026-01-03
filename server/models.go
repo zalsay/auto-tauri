@@ -45,7 +45,7 @@ type Project struct {
 
 type Task struct {
 	ID        string    `gorm:"primaryKey;type:uuid" json:"id"`
-	ProjectID string    `gorm:"index;type:uuid;not null" json:"projectId"`
+	ProjectID *string   `gorm:"index;type:uuid" json:"projectId"`
 	UserID    string    `gorm:"index;type:uuid;not null" json:"userId"`
 	Prompt    string    `gorm:"type:text;not null" json:"prompt"`
 	Type      string    `gorm:"size:32;not null;default:'workflow'" json:"type"`
