@@ -163,7 +163,7 @@ async function handleHyperAgent(input: any, config: any) {
                     name: z.string().describe("素材标题，适合作为素材中心名称字段"),
                     content: z.string().describe("素材正文内容，用于素材中心内容字段"),
                 }),
-                enableVisualMode: shouldScreenshot,
+                enableVisualMode: false,
                 onStep: shouldScreenshot
                     ? async (step: any) => {
                         if (screenshotFailed) {
