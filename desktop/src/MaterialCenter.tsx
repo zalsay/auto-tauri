@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { getMaterials, createMaterial, deleteMaterial, publishMaterial, Material } from './api';
+import { getMaterials, createMaterial, deleteMaterial, Material } from './api';
 import { getStoredToken } from './api';
 
 // This interface should be in a shared types file, but for now, we define it here.
@@ -65,7 +65,7 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
             setError("认证令牌未找到。");
             return;
         }
-        
+
         try {
             await createMaterial(token, { name: newName, type: newType, content: newContent });
             setNewName('');
@@ -186,14 +186,14 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
                                     <h4 className="font-bold text-slate-900 dark:text-white truncate flex-1" title={material.name}>{material.name}</h4>
                                     <span className="ml-2 px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-[10px] text-slate-500 whitespace-nowrap">{material.type}</span>
                                 </div>
-                                
+
                                 {material.projectId && projectMap.has(material.projectId) && (
                                     <div className="text-[11px] text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20 px-2 py-1 rounded-md flex items-center gap-1.5">
                                         <span className="material-symbols-outlined" style={{ fontSize: "14px" }}>link</span>
                                         <span>来源项目: {projectMap.get(material.projectId)}</span>
                                     </div>
                                 )}
-                                
+
                                 <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-3 h-12 flex-grow">{material.content}</p>
 
                                 <div className="flex gap-2 mt-2 items-center">
@@ -225,7 +225,7 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
                         <div className="flex flex-col gap-4">
                             <div>
                                 <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">发布平台</label>
-                                <select 
+                                <select
                                     className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
                                     value={publishPlatform}
                                     onChange={(e) => setPublishPlatform(e.target.value)}
@@ -235,8 +235,8 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
                             </div>
                             <div>
                                 <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">笔记标题</label>
-                                <input 
-                                    type="text" 
+                                <input
+                                    type="text"
                                     className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
                                     value={publishTitle}
                                     onChange={(e) => setPublishTitle(e.target.value)}
@@ -247,8 +247,8 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
                                 <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
                                     图片 URL {selectedMaterial?.type !== 'image' && <span className="text-red-500">*</span>}
                                 </label>
-                                <input 
-                                    type="text" 
+                                <input
+                                    type="text"
                                     className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
                                     value={publishImageUrl}
                                     onChange={(e) => setPublishImageUrl(e.target.value)}

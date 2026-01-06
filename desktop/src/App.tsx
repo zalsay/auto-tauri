@@ -2,9 +2,10 @@ import { useEffect, useState, useRef } from "react";
 import { apiRequest, clearStoredToken, getStoredToken, setStoredToken } from "./api";
 import { Command } from "@tauri-apps/plugin-shell";
 import MaterialCenter from "./MaterialCenter";
+import AgentStudio from "./pages/AgentStudio";
 
 type View = "login" | "register" | "main";
-type DashView = "dashboard" | "projects" | "tasks" | "teams" | "settings" | "materials" | "task_detail";
+type DashView = "dashboard" | "projects" | "tasks" | "teams" | "settings" | "materials" | "task_detail" | "agent_studio";
 type TaskStatus = "pending" | "running" | "completed" | "failed";
 
 interface User {
@@ -795,13 +796,13 @@ function App() {
 
             // 3. Transition UI
             setActiveTaskId(data.taskId);
-            setActiveProject({ 
-                id: material.id, 
-                name: `Publish: ${material.name}`, 
-                prompt: material.content, 
-                url: localImagePath, 
-                type: 'xhs_publish', 
-                screenshot: false 
+            setActiveProject({
+                id: material.id,
+                name: `Publish: ${material.name}`,
+                prompt: material.content,
+                url: localImagePath,
+                type: 'xhs_publish',
+                screenshot: false
             });
             setDashView("task_detail");
             setTaskStatus("running");
@@ -862,14 +863,14 @@ function App() {
                     } else {
                         setTaskLogs(logs => [...logs, `[LOG] ${line}`]);
                     }
-                } catch(e) {
+                } catch (e) {
                     setTaskLogs(logs => [...logs, `[LOG] ${line}`]);
                 }
                 finalPlainTextResult += line + "\n";
             });
 
             const child = await command.spawn();
-            
+
             // Payload for xhs-agent
             const payload = {
                 taskId: data.taskId,
@@ -877,7 +878,7 @@ function App() {
                 content: material.content,
                 imagePath: localImagePath // xhs-agent now handles URL downloading
             };
-            
+
             await child.write(JSON.stringify(payload) + "\n");
             setTaskLogs(logs => [...logs, `[System] 指令已下发，正在启动小红书发布代理...`]);
 
@@ -905,6 +906,7 @@ function App() {
             case 'teams': return '团队协作';
             case 'settings': return '系统设置';
             case 'materials': return '素材中心';
+            case 'agent_studio': return 'Agent 工作台';
             default: return '任务大师';
         }
     };
@@ -923,6 +925,7 @@ function App() {
                     <li><button onClick={() => { setDashView('projects'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'projects' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">view_kanban</span><span className="text-sm font-medium">项目管理</span></button></li>
                     <li><button onClick={() => { setDashView('tasks'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'tasks' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">history</span><span className="text-sm font-medium">任务历史</span></button></li>
                     <li><button onClick={() => { setDashView('materials'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'materials' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">topic</span><span className="text-sm font-medium">素材中心</span></button></li>
+                    <li><button onClick={() => { setDashView('agent_studio'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'agent_studio' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">smart_toy</span><span className="text-sm font-medium">Agent 工作台</span></button></li>
                     <li><button onClick={() => { setDashView('teams'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'teams' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">group</span><span className="text-sm font-medium">团队协作</span></button></li>
                     <li><button onClick={() => { setDashView('settings'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors group text-left ${dashView === 'settings' ? 'bg-gradient-primary shadow-lg shadow-purple-600/20 text-white' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className={`material-symbols-outlined ${dashView === 'settings' ? 'fill' : 'group-hover:text-accent-blue'}`}>settings</span><span className="text-sm font-medium">设置</span></button></li>
                 </ul>
@@ -1306,6 +1309,9 @@ function App() {
                     )}
                     {dashView === 'materials' && (
                         <MaterialCenter projectsList={projectsList} onPublish={handlePublishMaterial} />
+                    )}
+                    {dashView === 'agent_studio' && (
+                        <AgentStudio />
                     )}
                 </div>
             </main>
