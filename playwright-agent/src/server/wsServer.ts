@@ -403,11 +403,19 @@ export class AgentWSServer {
                 page = await browserManager.launch();
             }
 
-            // 执行代码（简化版：提取并执行关键操作）
-            // 完整实现需要 eval 或 vm 模块
-            const result = `代码执行完成。\n\n生成的代码:\n${session.lastGeneratedCode.substring(0, 500)}...`;
+            // 动态导入代码执行器
+            const { executeCode } = await import('./codeExecutor');
+
+            // 执行生成的代码
+            const executionResult = await executeCode(page, session.lastGeneratedCode);
 
             session.phase = 'completed';
+
+            // 构建结果消息
+            const stepsText = executionResult.steps.join('\n');
+            const result = executionResult.success
+                ? `${executionResult.message}\n\n执行步骤:\n${stepsText}`
+                : `${executionResult.message}\n\n执行步骤:\n${stepsText}\n\n错误: ${executionResult.error}`;
 
             // 保存执行结果
             if (session.flowRecord) {

@@ -112,11 +112,23 @@ export class BrowserManager {
             };
         }
 
-        return {
-            url: this.page.url(),
-            title: await this.page.title(),
-            isLoading: false,
-        };
+        try {
+            return {
+                url: this.page.url(),
+                title: await this.page.title(),
+                isLoading: false,
+            };
+        } catch (error) {
+            // 页面已失效，重置状态
+            console.log('页面已失效，重置浏览器状态');
+            this.page = null;
+            this.context = null;
+            return {
+                url: '',
+                title: '',
+                isLoading: false,
+            };
+        }
     }
 
     /**
