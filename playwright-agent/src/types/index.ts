@@ -2,14 +2,16 @@
 
 /** WebSocket 消息类型 */
 export type MessageType =
-    | 'user_input'      // 用户输入
-    | 'agent_action'    // Agent 执行动作
-    | 'browser_event'   // 浏览器事件
-    | 'code_update'     // 代码更新
-    | 'error'           // 错误信息
-    | 'session_init'    // 会话初始化
-    | 'auth'            // 认证消息
-    | 'loading';        // 加载状态
+    | 'user_input'        // 用户输入
+    | 'agent_action'      // Agent 执行动作
+    | 'browser_event'     // 浏览器事件
+    | 'code_update'       // 代码更新
+    | 'error'             // 错误信息
+    | 'session_init'      // 会话初始化
+    | 'auth'              // 认证消息
+    | 'loading'           // 加载状态
+    | 'confirm_generate'  // 确认生成代码
+    | 'confirm_execute';  // 确认执行代码
 
 /** WebSocket 消息结构 */
 export interface WSMessage {

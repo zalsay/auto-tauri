@@ -5,7 +5,7 @@ import { parser } from '../agent/parser';
 import { codeGenerator, CodeGenerator } from '../agent/codeGenerator';
 import { browserManager } from './browserManager';
 import { getEffectiveLLMConfig, LLMConfig } from './llmConfig';
-import { callLLM, AGENT_SYSTEM_PROMPT, LLMMessage } from './llmService';
+import { callLLM, AGENT_SYSTEM_PROMPT, CHAT_SYSTEM_PROMPT, BROWSER_TOOLS, LLMMessage, ToolCall } from './llmService';
 import * as flowRecorder from './flowRecorder';
 
 /**
@@ -216,7 +216,7 @@ export class AgentWSServer {
 
             // 调用 LLM
             const response = await callLLM(llmConfig, llmMessages);
-            console.log('LLM 响应:', response.content.substring(0, 100));
+            console.log('LLM 响应:', (response.content || '').substring(0, 100));
 
             // 创建或更新流程记录
             if (!session.flowRecord) {
@@ -225,7 +225,7 @@ export class AgentWSServer {
                     content
                 );
             }
-            await flowRecorder.addDiscussion(session.flowRecord, `AI: ${response.content}`);
+            await flowRecorder.addDiscussion(session.flowRecord, `AI: ${response.content || ''}`);
 
             // 设置阶段为可生成代码
             session.phase = 'ready_to_generate';
@@ -329,10 +329,11 @@ export class AgentWSServer {
             const response = await callLLM(llmConfig, messages, { maxTokens: 4096 });
 
             // 提取代码
-            const codeMatch = response.content.match(/```typescript\n([\s\S]*?)```/);
-            const code = codeMatch ? codeMatch[1].trim() : response.content;
+            const responseContent = response.content || '';
+            const codeMatch = responseContent.match(/```typescript\n([\s\S]*?)```/);
+            const code = codeMatch ? codeMatch[1].trim() : responseContent;
 
-            session.lastGeneratedCode = code;
+            session.lastGeneratedCode = code || '';
             session.phase = 'generated';
 
             // 保存到流程记录
@@ -353,7 +354,7 @@ export class AgentWSServer {
                 role: 'assistant',
                 content: '✅ 代码已生成！请查看右侧代码面板，确认后点击「开始执行」按钮。',
                 timestamp: Date.now(),
-                codeSnippet: code,
+                codeSnippet: code || undefined,
             };
             session.messages.push(codeMessage);
 
@@ -379,11 +380,11 @@ export class AgentWSServer {
     }
 
     /**
-     * 处理确认执行代码
+     * 处理确认执行代码 - 使用 LLM 工具调用循环
      */
     private async handleConfirmExecute(session: AgentSession, ws: WebSocket): Promise<void> {
-        if (!session.lastGeneratedCode) {
-            this.sendError(ws, '没有可执行的代码');
+        if (!session.authToken) {
+            this.sendError(ws, '请先登录');
             return;
         }
 
@@ -392,7 +393,7 @@ export class AgentWSServer {
 
         this.send(ws, {
             type: 'loading',
-            payload: { isLoading: true, message: '正在执行 Playwright 代码...' },
+            payload: { isLoading: true, message: '正在启动浏览器自动化...' },
             timestamp: Date.now(),
         });
 
@@ -403,19 +404,138 @@ export class AgentWSServer {
                 page = await browserManager.launch();
             }
 
-            // 动态导入代码执行器
-            const { executeCode } = await import('./codeExecutor');
+            // 获取 LLM 配置
+            const llmConfig = await getEffectiveLLMConfig(session.authToken);
 
-            // 执行生成的代码
-            const executionResult = await executeCode(page, session.lastGeneratedCode);
+            // 构建任务描述
+            const taskDescription = session.messages
+                .filter(m => m.role === 'user')
+                .map(m => m.content)
+                .join('\n');
+
+            // 初始化消息
+            const messages: LLMMessage[] = [
+                { role: 'system', content: AGENT_SYSTEM_PROMPT },
+                { role: 'user', content: `请完成以下任务：\n${taskDescription}` },
+            ];
+
+            const steps: string[] = [];
+            let maxIterations = 20;
+            let taskCompleted = false;
+            let finalResult = '';
+
+            // Agent 循环
+            while (maxIterations > 0 && !taskCompleted) {
+                maxIterations--;
+
+                // 调用 LLM
+                const response = await callLLM(llmConfig, messages, {
+                    tools: BROWSER_TOOLS,
+                    maxTokens: 2048,
+                });
+
+                // 如果有工具调用
+                if (response.tool_calls && response.tool_calls.length > 0) {
+                    for (const toolCall of response.tool_calls) {
+                        const toolName = toolCall.function.name;
+                        const toolArgs = JSON.parse(toolCall.function.arguments);
+
+                        console.log(`执行工具: ${toolName}`, toolArgs);
+
+                        // 发送步骤更新
+                        this.send(ws, {
+                            type: 'loading',
+                            payload: { isLoading: true, message: `执行: ${toolName}...` },
+                            timestamp: Date.now(),
+                        });
+
+                        let toolResult = '';
+
+                        try {
+                            // 执行浏览器操作
+                            switch (toolName) {
+                                case 'browser_navigate':
+                                    await page.goto(toolArgs.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                                    toolResult = `已导航到 ${toolArgs.url}`;
+                                    steps.push(`✅ 导航到 ${toolArgs.url}`);
+                                    break;
+
+                                case 'browser_click':
+                                    await page.click(toolArgs.selector, { timeout: 10000 });
+                                    toolResult = `已点击 ${toolArgs.selector}`;
+                                    steps.push(`✅ 点击 ${toolArgs.selector}`);
+                                    break;
+
+                                case 'browser_type':
+                                    await page.fill(toolArgs.selector, toolArgs.text, { timeout: 10000 });
+                                    toolResult = `已输入文本到 ${toolArgs.selector}`;
+                                    steps.push(`✅ 输入 "${toolArgs.text}" 到 ${toolArgs.selector}`);
+                                    break;
+
+                                case 'browser_screenshot':
+                                    const screenshot = await page.screenshot({ type: 'png' });
+                                    toolResult = '截图已完成';
+                                    steps.push(`✅ 截图完成`);
+                                    break;
+
+                                case 'browser_get_text':
+                                    const element = await page.locator(toolArgs.selector).first();
+                                    const text = await element.textContent();
+                                    toolResult = `获取到文本: ${text}`;
+                                    steps.push(`✅ 获取文本: ${text?.substring(0, 100)}...`);
+                                    break;
+
+                                case 'browser_wait':
+                                    await page.waitForSelector(toolArgs.selector, { timeout: 10000 });
+                                    toolResult = `元素已出现: ${toolArgs.selector}`;
+                                    steps.push(`✅ 等待元素 ${toolArgs.selector}`);
+                                    break;
+
+                                case 'task_complete':
+                                    taskCompleted = true;
+                                    finalResult = toolArgs.result;
+                                    toolResult = toolArgs.result;
+                                    steps.push(`🎉 任务完成: ${toolArgs.result}`);
+                                    break;
+
+                                default:
+                                    toolResult = `未知工具: ${toolName}`;
+                                    steps.push(`⚠️ 未知工具: ${toolName}`);
+                            }
+                        } catch (error: any) {
+                            toolResult = `操作失败: ${error.message}`;
+                            steps.push(`❌ ${toolName} 失败: ${error.message}`);
+                        }
+
+                        // 添加助手消息和工具结果到历史
+                        messages.push({
+                            role: 'assistant',
+                            content: null,
+                            tool_calls: [toolCall],
+                        });
+                        messages.push({
+                            role: 'tool',
+                            content: toolResult,
+                            tool_call_id: toolCall.id,
+                        });
+
+                        // 短暂等待
+                        await page.waitForTimeout(500);
+                    }
+                } else if (response.content) {
+                    // LLM 返回文本响应，可能是完成或需要更多信息
+                    finalResult = response.content;
+                    break;
+                } else {
+                    break;
+                }
+            }
 
             session.phase = 'completed';
 
             // 构建结果消息
-            const stepsText = executionResult.steps.join('\n');
-            const result = executionResult.success
-                ? `${executionResult.message}\n\n执行步骤:\n${stepsText}`
-                : `${executionResult.message}\n\n执行步骤:\n${stepsText}\n\n错误: ${executionResult.error}`;
+            const stepsText = steps.join('\n');
+            const result = `执行完成!\n\n执行步骤:\n${stepsText}${finalResult ? '\n\n结果: ' + finalResult : ''}`;
 
             // 保存执行结果
             if (session.flowRecord) {
@@ -431,7 +551,7 @@ export class AgentWSServer {
             const resultMessage: ChatMessage = {
                 id: uuidv4(),
                 role: 'assistant',
-                content: `✅ 执行完成！\n\n${result}`,
+                content: `✅ ${result}`,
                 timestamp: Date.now(),
             };
             session.messages.push(resultMessage);
