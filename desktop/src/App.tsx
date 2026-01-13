@@ -215,6 +215,31 @@ function HyperAgentResultDisplay({ data }: { data: any }) {
 }
 function App() {
     const [view, setView] = useState<View>("login");
+
+    // Theme State
+    const [theme, setTheme] = useState<"light" | "dark">(() => {
+        if (typeof window !== "undefined" && localStorage.getItem("theme")) {
+            return localStorage.getItem("theme") as "light" | "dark";
+        }
+        if (typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+            return "dark";
+        }
+        return "light";
+    });
+
+    useEffect(() => {
+        const root = window.document.documentElement;
+        if (theme === "dark") {
+            root.classList.add("dark");
+        } else {
+            root.classList.remove("dark");
+        }
+        localStorage.setItem("theme", theme);
+    }, [theme]);
+
+    function toggleTheme() {
+        setTheme(prev => prev === "dark" ? "light" : "dark");
+    }
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [user, setUser] = useState<User | null>(null);
@@ -1261,13 +1286,20 @@ function App() {
     if (view === "login" || view === "register") {
         const isLogin = view === "login";
         return (
-            <div className="flex min-h-screen items-center justify-center bg-background-light dark:bg-background-dark p-4">
+            <div className="flex min-h-screen items-center justify-center bg-background-light dark:bg-background-dark p-4 relative">
+                <button
+                    onClick={toggleTheme}
+                    className="absolute top-6 right-6 p-2.5 rounded-full bg-surface-light dark:bg-surface-dark shadow-lg border border-slate-200 dark:border-slate-800 text-slate-500 hover:text-accent-blue dark:text-slate-400 dark:hover:text-blue-400 transition-all hover:scale-105 active:scale-95"
+                    title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
+                >
+                    <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>
+                        {theme === 'dark' ? 'light_mode' : 'dark_mode'}
+                    </span>
+                </button>
                 <div className="w-full max-w-md rounded-xl bg-surface-light dark:bg-surface-dark p-8 shadow-lg border border-slate-200 dark:border-slate-800">
                     <div className="mb-6 flex items-center justify-center gap-3">
-                        <div className="size-10 rounded bg-gradient-primary flex items-center justify-center text-white shadow-md shadow-blue-600/20">
-                            <span className="material-symbols-outlined" style={{ fontSize: "24px" }}>check_circle</span>
-                        </div>
-                        <h1 className="text-2xl font-bold tracking-tight bg-gradient-to-r from-blue-700 to-purple-700 dark:from-blue-500 dark:to-purple-500 bg-clip-text text-transparent">任务大师</h1>
+                        <img src="/logo-v2-1.png" alt="Logo" className="size-10" />
+                        <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">任务大师</h1>
                     </div>
                     <h2 className="mb-6 text-xl font-bold text-slate-900 dark:text-white text-center">{isLogin ? "欢迎回来" : "创建账户"}</h2>
                     {error && <div className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-500 dark:bg-red-900/20 dark:text-red-400">{error}</div>}
@@ -1327,6 +1359,15 @@ function App() {
                         <span className="text-lg font-bold text-slate-900 dark:text-white">{getPageTitle()}</span>
                     </div>
                     <div className="flex items-center gap-4">
+                        <button
+                            onClick={toggleTheme}
+                            className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 transition-colors"
+                            title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
+                        >
+                            <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>
+                                {theme === 'dark' ? 'light_mode' : 'dark_mode'}
+                            </span>
+                        </button>
                         <div className="flex items-center gap-2">
                             <span className="text-sm font-medium text-slate-700 dark:text-slate-300 hidden sm:block">{user?.email}</span>
                             <div className="size-8 rounded-full bg-gradient-to-br from-[#5384FC] to-[#F82CC0] flex items-center justify-center text-white font-bold text-xs">{user?.email.substring(0, 2).toUpperCase()}</div>
