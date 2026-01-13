@@ -47,9 +47,15 @@ async function getOSSClient(): Promise<OSS> {
     // 获取新的凭证
     const tokenData = await getOSSTempToken();
 
-    // 创建新的 OSS client
+    console.log('[OSS] Creating client with config:', {
+        region: tokenData.region,
+        endpoint: tokenData.endpoint,
+        bucket: tokenData.bucket,
+    });
+
+    // 创建新的 OSS client - 使用 endpoint 而不是 region
     ossClient = new OSS({
-        region: `oss-${tokenData.region}`,
+        endpoint: tokenData.endpoint,
         accessKeyId: tokenData.accessKeyId,
         accessKeySecret: tokenData.accessKeySecret,
         bucket: tokenData.bucket,
@@ -97,16 +103,21 @@ export async function uploadToOSS(
 
 /**
  * 简易版 OSS 上传 (使用 SDK)
- * 直接调用 SDK 上传，失败时返回本地预览
+ * 直接调用 SDK 上传，失败时抛出错误
  */
 export async function uploadToOSSSimple(file: File): Promise<string> {
+    // Validate image file type
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/svg+xml'];
+    if (!allowedTypes.includes(file.type)) {
+        throw new Error(`不支持的文件格式: ${file.type}。请上传 JPG、PNG、GIF、WebP 等图片格式。`);
+    }
+
     try {
         const url = await uploadToOSS(file);
         console.log('[OSS] 上传成功:', url);
         return url;
     } catch (e: any) {
-        console.warn('[OSS] 上传失败，使用本地预览', e);
-        // 返回本地 blob URL 用于预览
-        return URL.createObjectURL(file);
+        console.error('[OSS] 上传失败:', e);
+        throw new Error(`图片上传失败: ${e.message || '请检查网络连接和 OSS 配置'}`);
     }
 }

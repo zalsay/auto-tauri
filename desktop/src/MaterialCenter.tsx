@@ -97,7 +97,7 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
         }
 
         try {
-            await createMaterial(token, { name: newName, type: 'text', content: newContent, projectId: newProjectId });
+            await createMaterial(token, { name: newName, type: 'text', content: newContent, projectId: newProjectId, imageUrls: previewUrl });
             setNewName('');
             setNewContent('');
             setNewProjectId('');
@@ -178,7 +178,7 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
         setEditName(material.name);
         setEditContent(material.content);
         setEditProjectId(material.projectId || '');
-        setEditImageUrl((material as any).imageUrl || '');
+        setEditImageUrl((material as any).imageUrls || '');
         setEditImageInputMode('url');
         setIsEditModalOpen(true);
     };
@@ -196,7 +196,8 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
                 name: editName,
                 type: 'text',
                 content: editContent,
-                projectId: editProjectId,
+                projectId: editProjectId || undefined,
+                imageUrls: editImageUrl,
             });
             setIsEditModalOpen(false);
             await fetchMaterials();
@@ -298,33 +299,44 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
 
                         {imageInputMode === 'url' ? (
                             <div>
-                                <input
-                                    type="text"
+                                <textarea
                                     className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
-                                    placeholder="输入图片 URL（可选）..."
+                                    placeholder="输入图片 URL（每行一个，最多9张）..."
+                                    rows={3}
                                     value={previewUrl}
                                     onChange={(e) => {
-                                        setPreviewUrl(e.target.value);
+                                        const urls = e.target.value.split('\n').filter(u => u.trim()).slice(0, 9);
+                                        setPreviewUrl(urls.join('\n'));
                                     }}
                                 />
+                                <p className="text-xs text-slate-500 mt-1">已添加 {previewUrl.split('\n').filter(u => u.trim()).length}/9 张图片</p>
                             </div>
                         ) : (
                             <div className="flex flex-col gap-2">
                                 <input
                                     ref={fileInputRef}
                                     type="file"
-                                    accept="image/*"
+                                    accept=".jpg,.jpeg,.png,.gif,.webp,.bmp,.svg"
+                                    multiple
                                     className="hidden"
                                     onChange={async (e) => {
-                                        const file = e.target.files?.[0];
-                                        if (!file) return;
+                                        const files = Array.from(e.target.files || []);
+                                        if (files.length === 0) return;
+
+                                        const currentUrls = previewUrl.split('\n').filter(u => u.trim());
+                                        const remainingSlots = 9 - currentUrls.length;
+                                        const filesToUpload = files.slice(0, remainingSlots);
 
                                         setIsUploading(true);
                                         setUploadProgress(0);
                                         try {
-                                            const url = await uploadToOSSSimple(file);
-                                            setPreviewUrl(url);
-                                            setUploadProgress(100);
+                                            const newUrls: string[] = [];
+                                            for (let i = 0; i < filesToUpload.length; i++) {
+                                                const url = await uploadToOSSSimple(filesToUpload[i]);
+                                                newUrls.push(url);
+                                                setUploadProgress(Math.round(((i + 1) / filesToUpload.length) * 100));
+                                            }
+                                            setPreviewUrl([...currentUrls, ...newUrls].join('\n'));
                                         } catch (err: any) {
                                             setError(err.message || '上传失败');
                                         } finally {
@@ -335,12 +347,12 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
                                 <button
                                     type="button"
                                     onClick={() => fileInputRef.current?.click()}
-                                    disabled={isUploading}
+                                    disabled={isUploading || previewUrl.split('\n').filter(u => u.trim()).length >= 9}
                                     className="flex items-center justify-center gap-2 w-full p-4 rounded-lg border-2 border-dashed border-slate-300 dark:border-slate-600 hover:border-blue-400 transition-colors disabled:opacity-50"
                                 >
                                     <span className="material-symbols-outlined text-slate-400">cloud_upload</span>
                                     <span className="text-sm text-slate-500">
-                                        {isUploading ? `上传中... ${uploadProgress}%` : '点击选择图片（可选）'}
+                                        {isUploading ? `上传中... ${uploadProgress}%` : `点击选择图片（最多9张，已选${previewUrl.split('\n').filter(u => u.trim()).length}张）`}
                                     </span>
                                 </button>
                                 {isUploading && (
@@ -353,8 +365,23 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
 
                         {/* Preview */}
                         {previewUrl && (
-                            <div className="rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700">
-                                <img src={previewUrl} alt="预览" className="w-full max-h-40 object-contain bg-slate-50 dark:bg-slate-900" />
+                            <div className="grid grid-cols-3 gap-2">
+                                {previewUrl.split('\n').filter(u => u.trim()).map((url, idx) => (
+                                    <div key={idx} className="relative rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 group">
+                                        <img src={url} alt={`预览${idx + 1}`} className="w-full h-20 object-cover bg-slate-50 dark:bg-slate-900" />
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                const urls = previewUrl.split('\n').filter(u => u.trim());
+                                                urls.splice(idx, 1);
+                                                setPreviewUrl(urls.join('\n'));
+                                            }}
+                                            className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                                        >
+                                            <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>close</span>
+                                        </button>
+                                    </div>
+                                ))}
                             </div>
                         )}
                     </div>
@@ -522,31 +549,44 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
 
                                 {editImageInputMode === 'url' ? (
                                     <div>
-                                        <input
-                                            type="text"
+                                        <textarea
                                             className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
-                                            placeholder="输入图片 URL（可选）..."
+                                            placeholder="输入图片 URL（每行一个，最多9张）..."
+                                            rows={3}
                                             value={editImageUrl}
-                                            onChange={(e) => setEditImageUrl(e.target.value)}
+                                            onChange={(e) => {
+                                                const urls = e.target.value.split('\n').filter(u => u.trim()).slice(0, 9);
+                                                setEditImageUrl(urls.join('\n'));
+                                            }}
                                         />
+                                        <p className="text-xs text-slate-500 mt-1">已添加 {editImageUrl.split('\n').filter(u => u.trim()).length}/9 张图片</p>
                                     </div>
                                 ) : (
                                     <div className="flex flex-col gap-2">
                                         <input
                                             ref={editFileInputRef}
                                             type="file"
-                                            accept="image/*"
+                                            accept=".jpg,.jpeg,.png,.gif,.webp,.bmp,.svg"
+                                            multiple
                                             className="hidden"
                                             onChange={async (e) => {
-                                                const file = e.target.files?.[0];
-                                                if (!file) return;
+                                                const files = Array.from(e.target.files || []);
+                                                if (files.length === 0) return;
+
+                                                const currentUrls = editImageUrl.split('\n').filter(u => u.trim());
+                                                const remainingSlots = 9 - currentUrls.length;
+                                                const filesToUpload = files.slice(0, remainingSlots);
 
                                                 setEditIsUploading(true);
                                                 setEditUploadProgress(0);
                                                 try {
-                                                    const url = await uploadToOSSSimple(file);
-                                                    setEditImageUrl(url);
-                                                    setEditUploadProgress(100);
+                                                    const newUrls: string[] = [];
+                                                    for (let i = 0; i < filesToUpload.length; i++) {
+                                                        const url = await uploadToOSSSimple(filesToUpload[i]);
+                                                        newUrls.push(url);
+                                                        setEditUploadProgress(Math.round(((i + 1) / filesToUpload.length) * 100));
+                                                    }
+                                                    setEditImageUrl([...currentUrls, ...newUrls].join('\n'));
                                                 } catch (err: any) {
                                                     setError(err.message || '上传失败');
                                                 } finally {
@@ -557,12 +597,12 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
                                         <button
                                             type="button"
                                             onClick={() => editFileInputRef.current?.click()}
-                                            disabled={editIsUploading}
+                                            disabled={editIsUploading || editImageUrl.split('\n').filter(u => u.trim()).length >= 9}
                                             className="flex items-center justify-center gap-2 w-full p-4 rounded-lg border-2 border-dashed border-slate-300 dark:border-slate-600 hover:border-blue-400 transition-colors disabled:opacity-50"
                                         >
                                             <span className="material-symbols-outlined text-slate-400">cloud_upload</span>
                                             <span className="text-sm text-slate-500">
-                                                {editIsUploading ? `上传中... ${editUploadProgress}%` : '点击选择图片（可选）'}
+                                                {editIsUploading ? `上传中... ${editUploadProgress}%` : `点击选择图片（最多9张，已选${editImageUrl.split('\n').filter(u => u.trim()).length}张）`}
                                             </span>
                                         </button>
                                         {editIsUploading && (
@@ -575,8 +615,23 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
 
                                 {/* Preview */}
                                 {editImageUrl && (
-                                    <div className="rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700">
-                                        <img src={editImageUrl} alt="预览" className="w-full max-h-40 object-contain bg-slate-50 dark:bg-slate-900" />
+                                    <div className="grid grid-cols-3 gap-2">
+                                        {editImageUrl.split('\n').filter(u => u.trim()).map((url, idx) => (
+                                            <div key={idx} className="relative rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 group">
+                                                <img src={url} alt={`预览${idx + 1}`} className="w-full h-20 object-cover bg-slate-50 dark:bg-slate-900" />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        const urls = editImageUrl.split('\n').filter(u => u.trim());
+                                                        urls.splice(idx, 1);
+                                                        setEditImageUrl(urls.join('\n'));
+                                                    }}
+                                                    className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                                                >
+                                                    <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>close</span>
+                                                </button>
+                                            </div>
+                                        ))}
                                     </div>
                                 )}
                             </div>

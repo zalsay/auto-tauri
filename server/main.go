@@ -59,6 +59,7 @@ func main() {
 			auth.PUT("/projects/:id", updateProjectHandler)
 			auth.DELETE("/projects/:id", deleteProjectHandler)
 			auth.POST("/projects/:id/execute", executeProjectHandler)
+			auth.GET("/projects/:id/materials", getProjectMaterialsHandler)
 
 			// Tasks
 			auth.GET("/tasks", getTasksHandler)

@@ -107,7 +107,7 @@ export async function getMaterials(token: string): Promise<Material[]> {
 
 
 
-export async function createMaterial(token: string, data: { name: string; type: string; content: string; projectId?: string }): Promise<Material> {
+export async function createMaterial(token: string, data: { name: string; type: string; content: string; projectId?: string; imageUrls?: string }): Promise<Material> {
 
   return apiRequest('/api/v1/materials', {
 
@@ -135,7 +135,7 @@ export async function deleteMaterial(token: string, id: string): Promise<void> {
 
 }
 
-export async function updateMaterial(token: string, id: string, data: { name?: string; type?: string; content?: string; projectId?: string }): Promise<Material> {
+export async function updateMaterial(token: string, id: string, data: { name?: string; type?: string; content?: string; projectId?: string; imageUrls?: string }): Promise<Material> {
   return apiRequest(`/api/v1/materials/${id}`, {
     method: 'PUT',
     headers: { Authorization: `Bearer ${token}` },

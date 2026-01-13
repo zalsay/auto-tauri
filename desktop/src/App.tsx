@@ -306,6 +306,15 @@ function App() {
     const [aiWorkflowExecuting, setAIWorkflowExecuting] = useState(false);
     const [aiHasStructuredSteps, setAIHasStructuredSteps] = useState(false);
 
+    // Publish Dialog State
+    const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
+    const [publishDialogProject, setPublishDialogProject] = useState<Project | null>(null);
+    const [publishMode, setPublishMode] = useState<'select' | 'random'>('select');
+    const [publishMaterials, setPublishMaterials] = useState<any[]>([]);
+    const [selectedMaterialIds, setSelectedMaterialIds] = useState<string[]>([]);
+    const [randomPublishCount, setRandomPublishCount] = useState(1);
+    const [publishLoading, setPublishLoading] = useState(false);
+
     useEffect(() => {
         const storedToken = getStoredToken();
         if (!storedToken) {
@@ -846,7 +855,27 @@ function App() {
 
         try {
             // 1. Determine image path (could be local path or URL)
-            const localImagePath = imageUrl || (material.type === 'image' ? material.content : '');
+            // Handle multi-line imageUrls (newline-separated) by taking the first valid URL
+            let localImagePath = '';
+            if (imageUrl) {
+                const urls = imageUrl.split('\n').map(u => u.trim()).filter(u => u);
+                localImagePath = urls[0] || '';
+            }
+            if (!localImagePath && material.type === 'image') {
+                localImagePath = material.content;
+            }
+            if (!localImagePath && material.imageUrls) {
+                const urls = material.imageUrls.split('\n').map((u: string) => u.trim()).filter((u: string) => u);
+                localImagePath = urls[0] || '';
+            }
+
+            // Validate that we have an image path
+            if (!localImagePath) {
+                showAlert("发布失败", "该素材没有关联图片，小红书发布需要至少一张图片。");
+                setLoading(false);
+                return;
+            }
+            console.log('[handlePublishMaterial] Using imagePath:', localImagePath);
 
             // 2. Start publish task on backend
             const data = await apiRequest(`/api/v1/materials/${material.id}/publish`, {
@@ -931,6 +960,12 @@ function App() {
                     setTaskLogs(logs => [...logs, `[LOG] ${line}`]);
                 }
                 finalPlainTextResult += line + "\n";
+
+                // Detect login required message and show user-friendly prompt
+                if (line.includes('Please log in') || line.includes('请登陆')) {
+                    setTaskStatus('pending');
+                    setTaskLogs(logs => [...logs, `[⚠️ 操作提示] 请先登录小红书平台，然后进入发布页面`]);
+                }
             });
 
             const child = await command.spawn();
@@ -950,6 +985,56 @@ function App() {
             showAlert("发布启动失败", e.message || "无法连接到执行引擎。");
             setLoading(false);
         }
+    }
+
+    // ============ Publish Dialog Handlers ============
+    async function handleOpenPublishDialog(project: Project) {
+        setPublishDialogProject(project);
+        setIsPublishDialogOpen(true);
+        setPublishMode('select');
+        setSelectedMaterialIds([]);
+        setRandomPublishCount(1);
+        setPublishMaterials([]);
+
+        // Fetch materials for this project
+        try {
+            const data = await apiRequest(`/api/v1/projects/${project.id}/materials`, {
+                headers: { Authorization: "Bearer " + token },
+            }) as { count: number; materials: any[] };
+            setPublishMaterials(data.materials || []);
+        } catch (e) {
+            setPublishMaterials([]);
+        }
+    }
+
+    async function handlePublishWithMaterial() {
+        if (!publishDialogProject || !token) return;
+
+        let materialsToPublish: any[] = [];
+
+        if (publishMode === 'select') {
+            materialsToPublish = publishMaterials.filter(m => selectedMaterialIds.includes(m.id));
+        } else {
+            // Random mode - shuffle and pick
+            const shuffled = [...publishMaterials].sort(() => 0.5 - Math.random());
+            materialsToPublish = shuffled.slice(0, Math.min(randomPublishCount, shuffled.length));
+        }
+
+        if (materialsToPublish.length === 0) {
+            showAlert("无可发布素材", "请先选择素材或确保项目有关联素材");
+            return;
+        }
+
+        setPublishLoading(true);
+        setIsPublishDialogOpen(false);
+
+        // Publish each material sequentially  
+        for (const material of materialsToPublish) {
+            await handlePublishMaterial(material, 'xiaohongshu', material.name, material.imageUrls);
+        }
+
+        setPublishLoading(false);
+        showAlert("发布任务已启动", `已启动 ${materialsToPublish.length} 个素材的发布任务`);
     }
 
     // ============ AI Workflow Dialog Handlers ============
@@ -1437,7 +1522,7 @@ function App() {
                                             <p className="text-sm text-slate-500 line-clamp-1">{p.prompt}</p>
                                         </div>
                                         <div className="flex gap-3">
-                                            <button onClick={() => handleExecuteProject(p)} className="flex items-center gap-2 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 px-4 py-2 rounded-lg text-sm font-bold hover:bg-purple-200 dark:hover:bg-purple-900/50 transition-colors shadow-sm"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>play_arrow</span>启动</button>
+                                            <button onClick={() => handleOpenPublishDialog(p)} className="flex items-center gap-2 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 px-4 py-2 rounded-lg text-sm font-bold hover:bg-purple-200 dark:hover:bg-purple-900/50 transition-colors shadow-sm"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>play_arrow</span>启动</button>
                                             {/* <button onClick={() => { handleOpenAIWorkflowDialog(p); }} className="flex items-center gap-2 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 px-4 py-2 rounded-lg text-sm font-bold hover:bg-purple-200 dark:hover:bg-purple-900/50 transition-colors shadow-sm"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>auto_awesome</span>AI生成</button> */}
                                             <button onClick={() => handleOpenEditModal(p)} className="p-2 rounded-lg text-slate-400 hover:text-accent-blue hover:bg-blue-50 dark:hover:bg-red-900/20 transition-colors"><span className="material-symbols-outlined">edit</span></button>
                                             <button onClick={() => handleDeleteProject(p.id)} className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"><span className="material-symbols-outlined">delete</span></button>
@@ -1738,6 +1823,89 @@ function App() {
                                     {globalModal.type === 'confirm' ? globalModal.confirmText : "好的"}
                                 </button>
                             </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Publish Dialog */}
+            {isPublishDialogOpen && publishDialogProject && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                    <div className="w-full max-w-lg rounded-xl bg-surface-light dark:bg-surface-dark p-6 shadow-2xl border border-slate-200 dark:border-slate-800 max-h-[80vh] overflow-y-auto animate-in zoom-in-95 duration-200">
+                        <div className="flex items-center justify-between mb-6">
+                            <h3 className="text-xl font-bold text-slate-900 dark:text-white">发布素材</h3>
+                            <button onClick={() => setIsPublishDialogOpen(false)} className="p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors">
+                                <span className="material-symbols-outlined">close</span>
+                            </button>
+                        </div>
+
+                        {/* Project info */}
+                        <div className="mb-4 p-3 bg-slate-50 dark:bg-slate-800 rounded-lg">
+                            <p className="text-sm font-medium text-slate-900 dark:text-white">{publishDialogProject.name}</p>
+                            <p className="text-xs text-slate-500">关联素材: {publishMaterials.length} 个</p>
+                        </div>
+
+                        {/* Mode selection */}
+                        <div className="mb-4">
+                            <label className="text-sm font-medium mb-2 block text-slate-700 dark:text-slate-300">发布方式</label>
+                            <div className="flex gap-4">
+                                <button onClick={() => setPublishMode('select')}
+                                    className={`flex-1 p-3 rounded-lg border text-left transition-all ${publishMode === 'select' ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}>
+                                    <span className="text-sm font-medium text-slate-900 dark:text-white">选择发布</span>
+                                    <p className="text-xs text-slate-500 mt-1">手动选择要发布的素材</p>
+                                </button>
+                                <button onClick={() => setPublishMode('random')}
+                                    className={`flex-1 p-3 rounded-lg border text-left transition-all ${publishMode === 'random' ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}>
+                                    <span className="text-sm font-medium text-slate-900 dark:text-white">随机发布</span>
+                                    <p className="text-xs text-slate-500 mt-1">随机选择指定数量发布</p>
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Select mode - material list */}
+                        {publishMode === 'select' && (
+                            <div className="mb-4 max-h-48 overflow-y-auto border border-slate-200 dark:border-slate-700 rounded-lg">
+                                {publishMaterials.length === 0 ? (
+                                    <p className="p-4 text-center text-slate-500 text-sm">暂无关联素材</p>
+                                ) : publishMaterials.map(m => (
+                                    <label key={m.id} className="flex items-center gap-3 p-3 border-b border-slate-100 dark:border-slate-800 last:border-b-0 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer transition-colors">
+                                        <input type="checkbox" checked={selectedMaterialIds.includes(m.id)}
+                                            onChange={(e) => {
+                                                if (e.target.checked) {
+                                                    setSelectedMaterialIds([...selectedMaterialIds, m.id]);
+                                                } else {
+                                                    setSelectedMaterialIds(selectedMaterialIds.filter(id => id !== m.id));
+                                                }
+                                            }}
+                                            className="h-4 w-4 rounded text-blue-600"
+                                        />
+                                        <span className="text-sm truncate text-slate-900 dark:text-white">{m.name}</span>
+                                    </label>
+                                ))}
+                            </div>
+                        )}
+
+                        {/* Random mode - count input */}
+                        {publishMode === 'random' && (
+                            <div className="mb-4">
+                                <label className="text-sm font-medium mb-2 block text-slate-700 dark:text-slate-300">发布数量</label>
+                                <input type="number" min={1} max={publishMaterials.length || 1}
+                                    value={randomPublishCount}
+                                    onChange={(e) => setRandomPublishCount(Math.max(1, parseInt(e.target.value) || 1))}
+                                    className="w-full p-2.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                                />
+                                <p className="text-xs text-slate-500 mt-1">最多可发布 {publishMaterials.length} 个素材</p>
+                            </div>
+                        )}
+
+                        {/* Actions */}
+                        <div className="flex gap-3 mt-6">
+                            <button onClick={() => setIsPublishDialogOpen(false)}
+                                className="flex-1 px-4 py-2.5 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-600 dark:text-slate-300 font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">取消</button>
+                            <button onClick={handlePublishWithMaterial} disabled={publishLoading || (publishMode === 'select' && selectedMaterialIds.length === 0)}
+                                className="flex-1 px-4 py-2.5 bg-gradient-primary text-white rounded-lg font-medium disabled:opacity-50 shadow-lg">
+                                {publishLoading ? '发布中...' : '开始发布'}
+                            </button>
                         </div>
                     </div>
                 </div>

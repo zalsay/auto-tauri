@@ -762,9 +762,11 @@ func updateMaterialHandler(c *gin.Context) {
 	id := c.Param("id")
 
 	var req struct {
-		Name    string `json:"name"`
-		Type    string `json:"type"`
-		Content string `json:"content"`
+		Name      string  `json:"name"`
+		Type      string  `json:"type"`
+		Content   string  `json:"content"`
+		ProjectID *string `json:"projectId"`
+		ImageUrls string  `json:"imageUrls"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -788,6 +790,16 @@ func updateMaterialHandler(c *gin.Context) {
 	if req.Content != "" {
 		material.Content = req.Content
 	}
+	// Allow updating projectId (can be set to nil/empty or changed)
+	if req.ProjectID != nil {
+		if *req.ProjectID == "" {
+			material.ProjectID = nil
+		} else {
+			material.ProjectID = req.ProjectID
+		}
+	}
+	// Update imageUrls
+	material.ImageUrls = req.ImageUrls
 
 	if err := globalDB.Save(&material).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "update_failed"})
@@ -889,5 +901,19 @@ func getOSSTempTokenHandler(c *gin.Context) {
 		"region":          region,
 		"endpoint":        fmt.Sprintf("https://oss-%s.aliyuncs.com", region),
 		"expiredTime":     expiredTime,
+	})
+}
+
+// getProjectMaterialsHandler returns materials associated with a project
+func getProjectMaterialsHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	projectID := c.Param("id")
+
+	var materials []Material
+	globalDB.Where("project_id = ? AND user_id = ?", projectID, userID).Order("created_at desc").Find(&materials)
+
+	c.JSON(http.StatusOK, gin.H{
+		"count":     len(materials),
+		"materials": materials,
 	})
 }
