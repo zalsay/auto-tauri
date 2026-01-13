@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { getMaterials, createMaterial, deleteMaterial, updateMaterial, Material } from './api';
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { getMaterials, createMaterial, deleteMaterial, Material } from './api';
+
 import { getStoredToken } from './api';
 import { uploadToOSSSimple } from './ossUpload';
 
