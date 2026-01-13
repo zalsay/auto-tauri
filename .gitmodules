@@ -1,0 +1,3 @@
+[submodule "landing-page-vue"]
+	path = landing-page-vue
+	url = git@github.com:zalsay/auto-tauri-home.git
