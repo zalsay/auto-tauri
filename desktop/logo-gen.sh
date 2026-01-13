@@ -1,0 +1,1 @@
+npx tauri icon ./src-tauri/icons/logo-v2.png

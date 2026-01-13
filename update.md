@@ -80,6 +80,17 @@
    - 在 `sidecar/src/index.ts` 中启用 `onStep` 回调，对每个 Agent 步骤进行网页截图并上传至 OSS。
    - 将所有步骤截图（含最终截图）生成 URL 列表，以 JSON 数组形式写入 Sidecar 输出的 `data.imageUrl` 字段。
    - 后端 `completeTaskHandler` 继续从 `imageUrl` 读取字符串写入 `Material.ImageUrls` 字段，从而在素材中心中持久化一组步骤级截图 URL，满足「任务结束后截图」与过程回溯需求。
- - 2026-01-04：修复 HyperAgent 获取无障碍树时的字体加载错误：
-   - 在 `sidecar/src/index.ts` 中为 Node 环境全局 `fetch` 增加包装逻辑，拦截 `/snapshot/fonts/...` 路径，改为通过 `fs.readFile` 读取本地字体文件并返回 Node 内置 `Response`，避免 `ERR_INVALID_URL` 异常打断无障碍树与可视化覆盖层渲染。
-   - 当字体文件缺失或内容为空时，返回最小合法 BMFont ASCII 文本而不是空响应，避免上层解析逻辑抛出 `Error: no data provided`，减少执行日志中的噪音报错。
+  - 2026-01-04：修复 HyperAgent 获取无障碍树时的字体加载错误：
+    - 在 `sidecar/src/index.ts` 中为 Node 环境全局 `fetch` 增加包装逻辑，拦截 `/snapshot/fonts/...` 路径，改为通过 `fs.readFile` 读取本地字体文件并返回 Node 内置 `Response`，避免 `ERR_INVALID_URL` 异常打断无障碍树与可视化覆盖层渲染。
+    - 当字体文件缺失或内容为空时，返回最小合法 BMFont ASCII 文本而不是空响应，避免上层解析逻辑抛出 `Error: no data provided`，减少执行日志中的噪音报错。
+
+- 2026-01-13：新增 Page Analyzer 模块，解决 HyperAgent 模糊 prompt 执行效果差的问题：
+  - 新增 `sidecar/src/page_analyzer.ts` 模块，在执行 HA 任务前自动分析页面结构。
+  - 实现页面元素提取逻辑：遍历 DOM 识别按钮、输入框、链接等可交互元素，记录 text、placeholder、type、aria-label 等属性。
+  - 实现页面上下文捕获：获取页面标题、URL，自动推断策略类型（login / checkout / search / general）。
+  - 实现 Prompt 优化逻辑：调用 LLM 将模糊指令转换为精确的步骤式指令，包含元素描述、位置、视觉特征等具体信息。
+  - 集成至 `sidecar/src/index.ts`：添加 `autoOptimizePrompt` 开关参数，开启后自动执行页面分析与 prompt 优化。
+  - 优化结果输出：在 `data.promptOptimization` 中返回原始 prompt、优化后 prompt、策略说明和识别元素数量，便于调试和追踪。
+  - 创建 `sidecar/page_analyzer_usage.md` 使用文档，说明工作流程、使用方式和 API 配置。
+  - 优化效果示例：用户输入"帮我登录" → 优化为"点击右上角 'Sign In' 链接，等待表单加载，在邮箱框输入 'user@example.com'，在密码框输入密码，点击 'Sign In' 按钮"。
+  - 创建 `hyperagent.md` 官方文档简介文件。

@@ -11,16 +11,16 @@ function getBaseUrl() {
 export async function apiRequest(path: string, options: RequestInit = {}) {
   const url = getBaseUrl() + path;
   console.log(`[API Request] ${options.method || 'GET'} ${url}`, options);
-  
+
   const headers = new Headers(options.headers || {});
   if (!headers.has("Content-Type") && options.body) {
     headers.set("Content-Type", "application/json");
   }
-  
+
   try {
     const response = await fetch(url, { ...options, headers });
     console.log(`[API Response] ${response.status} ${url}`);
-    
+
     const text = await response.text();
     let data: unknown;
     try {
@@ -28,7 +28,7 @@ export async function apiRequest(path: string, options: RequestInit = {}) {
     } catch {
       data = text;
     }
-    
+
     if (!response.ok) {
       throw { status: response.status, data };
     }
@@ -97,27 +97,27 @@ export interface Material {
 
 export async function getMaterials(token: string): Promise<Material[]> {
 
-    return apiRequest('/api/v1/materials', {
+  return apiRequest('/api/v1/materials', {
 
-        headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}` },
 
-    }) as Promise<Material[]>;
+  }) as Promise<Material[]>;
 
 }
 
 
 
-export async function createMaterial(token: string, data: { name: string; type: string; content: string }): Promise<Material> {
+export async function createMaterial(token: string, data: { name: string; type: string; content: string; projectId?: string }): Promise<Material> {
 
-    return apiRequest('/api/v1/materials', {
+  return apiRequest('/api/v1/materials', {
 
-        method: 'POST',
+    method: 'POST',
 
-        headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}` },
 
-        body: JSON.stringify(data),
+    body: JSON.stringify(data),
 
-    }) as Promise<Material>;
+  }) as Promise<Material>;
 
 }
 
@@ -125,20 +125,28 @@ export async function createMaterial(token: string, data: { name: string; type: 
 
 export async function deleteMaterial(token: string, id: string): Promise<void> {
 
-    await apiRequest(`/api/v1/materials/${id}`, {
+  await apiRequest(`/api/v1/materials/${id}`, {
 
-        method: 'DELETE',
+    method: 'DELETE',
 
-        headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}` },
 
-    });
+  });
 
 }
 
+export async function updateMaterial(token: string, id: string, data: { name?: string; type?: string; content?: string; projectId?: string }): Promise<Material> {
+  return apiRequest(`/api/v1/materials/${id}`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(data),
+  }) as Promise<Material>;
+}
+
 export async function publishMaterial(token: string, id: string, data: { platform: string; title: string }): Promise<any> {
-    return apiRequest(`/api/v1/materials/${id}/publish`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: JSON.stringify(data),
-    });
+  return apiRequest(`/api/v1/materials/${id}/publish`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(data),
+  });
 }

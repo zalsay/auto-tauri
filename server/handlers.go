@@ -698,6 +698,7 @@ type MaterialCreateRequest struct {
 	Type      string  `json:"type"`
 	Content   string  `json:"content"`
 	ProjectID *string `json:"projectId"`
+	ImageUrls string  `json:"imageUrls"`
 }
 
 type PublishMaterialRequest struct {
@@ -719,6 +720,7 @@ func createMaterialHandler(c *gin.Context) {
 		Type:      req.Type,
 		Content:   req.Content,
 		ProjectID: req.ProjectID,
+		ImageUrls: req.ImageUrls,
 	}
 	if err := globalDB.Create(&material).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_create_material"})
@@ -737,8 +739,62 @@ func getMaterialsHandler(c *gin.Context) {
 func deleteMaterialHandler(c *gin.Context) {
 	userID := c.MustGet("userID").(string)
 	id := c.Param("id")
-	globalDB.Where("id = ? AND user_id = ?", id, userID).Delete(&Material{})
+	log.Printf("[deleteMaterialHandler] UserID: %s, MaterialID: %s", userID, id)
+
+	result := globalDB.Where("id = ? AND user_id = ?", id, userID).Delete(&Material{})
+	if result.Error != nil {
+		log.Printf("[deleteMaterialHandler] Delete failed: %v", result.Error)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "delete_failed"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		log.Printf("[deleteMaterialHandler] No rows affected. Material not found or access denied.")
+		c.JSON(http.StatusNotFound, gin.H{"error": "material_not_found_or_access_denied"})
+		return
+	}
+
+	log.Printf("[deleteMaterialHandler] Successfully deleted material")
 	c.JSON(http.StatusOK, gin.H{"message": "material_deleted"})
+}
+
+func updateMaterialHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	id := c.Param("id")
+
+	var req struct {
+		Name    string `json:"name"`
+		Type    string `json:"type"`
+		Content string `json:"content"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "details": err.Error()})
+		return
+	}
+
+	var material Material
+	if err := globalDB.Where("id = ? AND user_id = ?", id, userID).First(&material).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "material_not_found"})
+		return
+	}
+
+	// Update fields if provided
+	if req.Name != "" {
+		material.Name = req.Name
+	}
+	if req.Type != "" {
+		material.Type = req.Type
+	}
+	if req.Content != "" {
+		material.Content = req.Content
+	}
+
+	if err := globalDB.Save(&material).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "update_failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, material)
 }
 
 func publishMaterialHandler(c *gin.Context) {
@@ -802,5 +858,36 @@ func publishMaterialHandler(c *gin.Context) {
 		"platform": req.Platform,
 		"title":    req.Title,
 		"message":  "发布任务已启动",
+	})
+}
+
+// getOSSTempTokenHandler returns OSS credentials for frontend direct upload
+// Returns the bucket config and keys from environment variables
+func getOSSTempTokenHandler(c *gin.Context) {
+	// Get OSS configuration from environment
+	accessKeyID := os.Getenv("OSS_ACCESS_KEY_ID")
+	accessKeySecret := os.Getenv("OSS_ACCESS_KEY_SECRET")
+	bucket := os.Getenv("OSS_BUCKET")
+	region := os.Getenv("OSS_REGION")
+
+	if accessKeyID == "" || accessKeySecret == "" || bucket == "" || region == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "oss_not_configured",
+			"message": "OSS环境变量未配置",
+		})
+		return
+	}
+
+	// For security, you should use STS SDK to generate temporary tokens
+	// Here we return the config for direct upload (suitable for internal use)
+	expiredTime := time.Now().Add(30 * time.Minute).Unix()
+
+	c.JSON(http.StatusOK, gin.H{
+		"accessKeyId":     accessKeyID,
+		"accessKeySecret": accessKeySecret,
+		"bucket":          bucket,
+		"region":          region,
+		"endpoint":        fmt.Sprintf("https://oss-%s.aliyuncs.com", region),
+		"expiredTime":     expiredTime,
 	})
 }

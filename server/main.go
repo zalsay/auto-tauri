@@ -69,8 +69,12 @@ func main() {
 			// Materials
 			auth.POST("/materials", createMaterialHandler)
 			auth.GET("/materials", getMaterialsHandler)
+			auth.PUT("/materials/:id", updateMaterialHandler)
 			auth.DELETE("/materials/:id", deleteMaterialHandler)
 			auth.POST("/materials/:id/publish", publishMaterialHandler)
+
+			// OSS Upload
+			auth.GET("/oss/temp-token", getOSSTempTokenHandler)
 		}
 	}
 

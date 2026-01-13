@@ -9,10 +9,10 @@
   --color-accent-blue: #2563eb;
   --color-accent-purple: #7c3aed;
 
-  --background-image-gradient-primary: linear-gradient(135deg, #1d4ed8 0%, #7e22ce 100%);
-  --background-image-gradient-hover: linear-gradient(135deg, #1e40af 0%, #6b21a8 100%);
-  --background-image-gradient-light: linear-gradient(135deg, rgba(29, 78, 216, 0.15) 0%, rgba(126, 34, 206, 0.15) 100%);
-  --background-image-gradient-text: linear-gradient(135deg, #1d4ed8 0%, #7e22ce 100%);
+  --background-image-gradient-primary: linear-gradient(135deg, #5384FC 0%, #F82CC0 100%);
+  --background-image-gradient-hover: linear-gradient(135deg, #4070E0 0%, #D924A8 100%);
+  --background-image-gradient-light: linear-gradient(135deg, rgba(83, 132, 252, 0.15) 0%, rgba(248, 44, 192, 0.15) 100%);
+  --background-image-gradient-text: linear-gradient(135deg, #5384FC 0%, #F82CC0 100%);
 
   --font-display: Inter, sans-serif;
 }
@@ -28,7 +28,7 @@
     font-variation-settings: 'FILL' 1;
   }
   .text-gradient {
-    background: linear-gradient(135deg, #1d4ed8 0%, #7e22ce 100%);
+    background: linear-gradient(135deg, #5384FC 0%, #F82CC0 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;

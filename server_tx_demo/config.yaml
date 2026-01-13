@@ -1,0 +1,43 @@
+# Server Transaction Demo Configuration
+
+# Database Configuration (PostgreSQL)
+database:
+  host: "localhost"
+  port: 5432
+  username: "postgres"
+  password: "postgres"
+  name: "tx_demo"
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: 300
+
+# Redis Configuration (for idempotency & distributed lock)
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+  pool_size: 10
+
+# Application Configuration
+app:
+  host: "0.0.0.0"
+  port: 8080
+  mode: "debug"  # debug / release
+
+# Saga Configuration
+saga:
+  max_retries: 3
+  retry_delay_ms: 1000
+  compensation_timeout_s: 30
+
+# Local Message Table Configuration
+localmsg:
+  poll_interval_ms: 500
+  batch_size: 100
+  max_retry_times: 5
+
+# TCC Configuration
+tcc:
+  lock_timeout_s: 30
+  confirm_timeout_s: 60

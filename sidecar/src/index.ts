@@ -1,18 +1,41 @@
+/**
+ * Sidecar 主入口文件
+ * 
+ * ============================================================================
+ * 功能模块说明
+ * ============================================================================
+ * 
+ * 1. env_loader           - 环境变量加载（.env 文件路径解析）
+ * 2. llm_config           - LLM 配置解析（Provider, Model, API Key）
+ * 3. ai_call              - 大模型调用封装（直接调用 OpenAI 兼容 API）
+ * 4. hyperagent_handler   - HyperAgent 任务处理（浏览器自动化、OSS上传）
+ * 5. ai_workflow_handler  - AI 工作流生成（生成/继续/确认）
+ * 6. cache_manager        - 会话缓存管理
+ * 7. api_client           - 后端 API 通信
+ * 8. page_analyzer        - 页面分析与 prompt 优化
+ * 9. utils                - 公共工具函数（log, sleep）
+ * 
+ * ============================================================================
+ * 任务类型
+ * ============================================================================
+ * 
+ * - default (hyperagent)  : 浏览器自动化任务
+ * - ai_workflow           : AI 工作流生成任务
+ * 
+ * ============================================================================
+ */
+
 import * as readline from 'readline';
-import * as path from 'path';
-import * as os from 'os';
 import * as fs from 'fs';
-import { chromium } from 'playwright';
-import { HyperAgent } from "@hyperbrowser/agent";
-import { z } from 'zod';
-import OSS from 'ali-oss';
-import dotenv from 'dotenv';
 
-// Explicitly resolve the path to the .env file located in the parent directory of the script
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+// 模块导入
+import './env_loader';  // 自动加载环境变量
+import { getLLMConfig, getMaskedApiKey } from './llm_config';
+import { handleHyperAgent } from './hyperagent_handler';
+import { handleAIWorkflow } from './ai_workflow_handler';
+import { log } from './utils';
 
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
-
+// Fetch polyfill for snapshot fonts (pkg compatibility)
 const originalFetch = (globalThis as any).fetch;
 if (typeof originalFetch === 'function') {
     (globalThis as any).fetch = (async (input: any, init?: any) => {
@@ -42,12 +65,10 @@ if (typeof originalFetch === 'function') {
     }) as any;
 }
 
-if (process.env.OSS_ACCESS_KEY_ID) {
-    console.error(`[dotenv] Successfully loaded OSS_ACCESS_KEY_ID: ${process.env.OSS_ACCESS_KEY_ID.substring(0, 4)}...`);
-} else {
-    console.error("[dotenv] Failed to load OSS credentials from .env file.");
-}
-
+/**
+ * 主函数
+ * 从 stdin 读取任务指令并处理
+ */
 async function main() {
     const rl = readline.createInterface({
         input: process.stdin,
@@ -71,199 +92,25 @@ async function main() {
     }
 }
 
-function getLLMConfig(input: any) {
-    const llm = input.llm || {};
-    let provider = llm.provider || input.llmProvider || 'openai';
-    let apiKey = llm.apiKey || input.llmApiKey || OPENROUTER_API_KEY;
-    let model = llm.model || input.llmModel || 'google/gemini-2.0-flash-exp:free';
-    let baseURL = llm.baseURL || undefined;
-
-    if (provider === 'TaskMaster') {
-        provider = 'openai';
-    }
-
-    if (!baseURL && (apiKey === OPENROUTER_API_KEY || (apiKey && model.includes('gemini')))) {
-        baseURL = 'https://openrouter.ai/api/v1';
-    }
-
-    if (baseURL && baseURL.includes('openrouter.ai')) {
-        provider = 'openai';
-    }
-
-    return { provider, model, apiKey, baseURL };
-}
-
+/**
+ * 任务路由
+ * 根据任务类型分发到对应处理器
+ */
 async function processTask(input: any) {
     const config = getLLMConfig(input);
 
-    log(`收到任务: ${input.taskId}, 类型: ${input.type}`);
-    const maskedApiKey = config.apiKey ? (config.apiKey.length > 8 ? `${config.apiKey.substring(0, 4)}...${config.apiKey.substring(config.apiKey.length - 4)}` : '****') : 'none';
-    log(`执行配置: Provider=${config.provider}, Model=${config.model}, BaseURL=${config.baseURL || 'default'}, APIKey=${maskedApiKey}`);
+    log(`收到任务: ${input.taskId}, 类型: ${input.type || 'hyperagent'}`);
+    log(`执行配置: Provider=${config.provider}, Model=${config.model}, BaseURL=${config.baseURL || 'default'}, APIKey=${getMaskedApiKey(config.apiKey)}`);
 
-
-    await handleHyperAgent(input, config);
-    
-}
-
-async function handleHyperAgent(input: any, config: any) {
-    log(`[HyperAgent] 正在初始化持久化环境...`);
-
-    let context;
-    try {
-        context = await chromium.launchPersistentContext(path.join(os.homedir(), '.auto-tauri', 'browser-profile'), {
-            headless: false,
-            channel: 'chrome',
-            viewport: { width: 1280, height: 800 }
-        });
-
-        const page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
-        log(`[HyperAgent] 已锁定主窗口。`);
-
-        const agent = new HyperAgent({
-            llm: {
-                provider: config.provider as any,
-                model: config.model,
-                apiKey: config.apiKey,
-                baseURL: config.baseURL
-            },
-            connectorConfig: { driver: "playwright", options: { page, context } }
-        });
-
-        if (input.url) {
-            log(`[HyperAgent] 正在主窗口导航至: ${input.url}`);
-            await page.goto(input.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        }
-
-        log(`[HyperAgent] 正在执行任务: ${input.prompt}`);
-
-        const materialNameFallback = `Result: ${input.taskId} - ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
-
-        const ossConfig = input.oss || {};
-        const shouldScreenshot = !!input.screenshot;
-        let ossClient: any = null;
-        let screenshotFailed = false;
-        const stepScreenshotUrls: string[] = [];
-
-        const ensureOssClient = async () => {
-            if (ossClient) return ossClient;
-            const client = new OSS({
-                region: ossConfig.region || process.env.OSS_REGION,
-                accessKeyId: ossConfig.accessKeyId || process.env.OSS_ACCESS_KEY_ID,
-                accessKeySecret: ossConfig.accessKeySecret || process.env.OSS_ACCESS_KEY_SECRET,
-                bucket: ossConfig.bucket || process.env.OSS_BUCKET,
-            });
-            ossClient = client;
-            return client;
-        };
-
-        const result = await (agent as any).executeTask(
-            input.prompt,
-            {
-                outputSchema: z.object({
-                    name: z.string().describe("素材标题，适合作为素材中心名称字段"),
-                    content: z.string().describe("素材正文内容，用于素材中心内容字段"),
-                }),
-                enableVisualMode: false,
-                onStep: shouldScreenshot
-                    ? async (step: any) => {
-                        if (screenshotFailed) {
-                            return;
-                        }
-                        try {
-                            const client = await ensureOssClient();
-                            const imageBuffer = await page.screenshot({ fullPage: true });
-                            const objectName = `screenshots/${input.taskId}/step-${step.idx}-${Date.now()}.png`;
-                            const uploadResult = await client.put(objectName, imageBuffer);
-                            stepScreenshotUrls.push(uploadResult.url);
-                            log(`[HyperAgent] Step ${step.idx} 截图已上传至: ${uploadResult.url}`);
-                        } catch (e: any) {
-                            screenshotFailed = true;
-                            log(`[HyperAgent] Step ${step.idx} 截图或上传失败: ${e.message}`);
-                        }
-                    }
-                    : undefined,
-            },
-            page
-        );
-        log(`[HyperAgent] 任务完成。result: ${JSON.stringify(result)}`);
-
-        const structuredOutput: any = result?.output || {};
-        const materialName = structuredOutput.name || materialNameFallback;
-        const materialContent = structuredOutput.content || JSON.stringify(structuredOutput || result || '');
-
-        let screenshotUrl: string | null = null;
-        if (shouldScreenshot && !screenshotFailed) {
-            log(`[HyperAgent] 正在执行截图并上传至OSS...`);
-            try {
-                const client = await ensureOssClient();
-                const imageBuffer = await page.screenshot({ fullPage: true });
-                const objectName = `screenshots/${input.taskId}/final-${Date.now()}.png`;
-
-                const uploadResult = await client.put(objectName, imageBuffer);
-                screenshotUrl = uploadResult.url;
-                stepScreenshotUrls.push(uploadResult.url);
-                log(`[HyperAgent] 截图已上传至: ${screenshotUrl}`);
-
-            } catch (e: any) {
-                log(`[HyperAgent] 截图或上传失败: ${e.message}`);
-                screenshotFailed = true;
-            }
-        }
-
-        const stepsCount = result?.steps?.length || 0;
-        let imageUrlsForMaterial: string | undefined;
-        if (stepScreenshotUrls.length > 0) {
-            imageUrlsForMaterial = JSON.stringify(stepScreenshotUrls);
-        } else if (screenshotUrl) {
-            imageUrlsForMaterial = JSON.stringify([screenshotUrl]);
-        }
-
-        const dataPayload: any = {
-            ...result,
-            output: materialContent,
-            name: materialName,
-            content: materialContent,
-            structuredOutput,
-            screenshotUrl,
-        };
-
-        if (imageUrlsForMaterial) {
-            dataPayload.imageUrl = imageUrlsForMaterial;
-        }
-
-        console.log(JSON.stringify({
-            taskId: input.taskId,
-            status: 'success',
-            data: dataPayload,
-            stepsCount: stepsCount
-        }));
-
-    } catch (e: any) {
-        log(`[HyperAgent] 错误: ${e.message}`);
-        console.log(JSON.stringify({
-            taskId: input.taskId,
-            status: 'failed',
-            error: e.message
-        }));
-    } finally {
-        if (context) {
-            await new Promise(r => setTimeout(r, 3000));
-            await context.close();
-        }
-        log('Sidecar 执行结束。');
+    // Route to appropriate handler based on task type
+    if (input.type === 'ai_workflow') {
+        await handleAIWorkflow(input, config);
+    } else {
+        await handleHyperAgent(input, config);
     }
 }
 
-
-
-function log(message: string) {
-    console.error(JSON.stringify({ type: 'log', message, timestamp: new Date().toISOString() }));
-}
-
-function sleep(ms: number) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
+// 启动
 main().catch(err => {
     console.error(JSON.stringify({ type: 'error', message: err.message }));
     process.exit(1);

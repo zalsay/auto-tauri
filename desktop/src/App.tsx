@@ -24,6 +24,8 @@ interface Project {
     prompt: string;
     type: string;
     screenshot: boolean;
+    platform?: string;
+    useAIRewrite?: boolean;
 }
 
 interface Task {
@@ -226,6 +228,8 @@ function App() {
     const [projectUrl, setProjectUrl] = useState("");
     const [projectType, setProjectType] = useState<"workflow" | "scrape">("workflow");
     const [projectScreenshot, setProjectScreenshot] = useState(false);
+    const [projectPlatform, setProjectPlatform] = useState("xiaohongshu");
+    const [useAIRewrite, setUseAIRewrite] = useState(false);
     const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
     const [editProjectId, setEditProjectId] = useState<string | null>(null);
@@ -263,6 +267,18 @@ function App() {
     const [taskLogs, setTaskLogs] = useState<string[]>([])
     const logsEndRef = useRef<HTMLDivElement>(null);
     const [lastResultData, setLastResultData] = useState<string>("");
+
+    // AI Workflow Dialog State
+    const [isAIWorkflowDialogOpen, setIsAIWorkflowDialogOpen] = useState(false);
+    const [aiWorkflowProject, setAIWorkflowProject] = useState<Project | null>(null);
+    const [aiDialogMessages, setAIDialogMessages] = useState<{ role: 'user' | 'assistant' | 'system'; content: string }[]>([]);
+    const [aiDialogLoading, setAIDialogLoading] = useState(false);
+    const [aiUserInput, setAIUserInput] = useState("");
+    const [aiWorkflowSteps, setAIWorkflowSteps] = useState<any[]>([]);
+    const [aiGeneratedPrompt, setAIGeneratedPrompt] = useState<string>("");
+    const [aiWorkflowLogs, setAIWorkflowLogs] = useState<string[]>([]);
+    const [aiWorkflowExecuting, setAIWorkflowExecuting] = useState(false);
+    const [aiHasStructuredSteps, setAIHasStructuredSteps] = useState(false);
 
     useEffect(() => {
         const storedToken = getStoredToken();
@@ -432,7 +448,7 @@ function App() {
         e.preventDefault();
         setLoading(true);
         try {
-            const body = JSON.stringify({ name: projectName, url: projectUrl, prompt: projectPrompt, type: projectType, screenshot: projectScreenshot });
+            const body = JSON.stringify({ name: projectName, url: projectUrl, prompt: projectPrompt, type: projectType, screenshot: projectScreenshot, platform: projectPlatform, useAIRewrite });
             if (isEditing && editProjectId) {
                 await apiRequest(`/api/v1/projects/${editProjectId}`, {
                     method: "PUT",
@@ -455,6 +471,8 @@ function App() {
             setProjectUrl("");
             setProjectPrompt("");
             setProjectScreenshot(false);
+            setProjectPlatform("xiaohongshu");
+            setUseAIRewrite(false);
             loadProjects();
         } catch (e) {
             showAlert("操作失败", "无法保存项目配置。");
@@ -471,6 +489,8 @@ function App() {
         setProjectPrompt("");
         setProjectType("workflow");
         setProjectScreenshot(false);
+        setProjectPlatform("xiaohongshu");
+        setUseAIRewrite(false);
         setIsProjectModalOpen(true);
     }
 
@@ -482,6 +502,8 @@ function App() {
         setProjectPrompt(p.prompt);
         setProjectType(p.type as any);
         setProjectScreenshot(p.screenshot);
+        setProjectPlatform((p as any).platform || "xiaohongshu");
+        setUseAIRewrite((p as any).useAIRewrite || false);
         setIsProjectModalOpen(true);
     }
 
@@ -665,7 +687,21 @@ function App() {
                 }
                 // For stderr, just accumulate as plain text/logs
                 finalPlainTextResult += line + "\n";
-                setTaskLogs(logs => [...logs, `[LOG] ${line}`]);
+
+                // Try to parse sidecar JSON log format
+                try {
+                    const parsed = JSON.parse(line);
+                    if (parsed.type === 'log' || parsed.type === 'error') {
+                        const timestamp = new Date(parsed.timestamp).toLocaleTimeString();
+                        const logMessage = `[${parsed.type.toUpperCase()}] [${timestamp}] ${parsed.message}`;
+                        setTaskLogs(logs => [...logs, logMessage]);
+                    } else {
+                        setTaskLogs(logs => [...logs, `[LOG] ${line}`]);
+                    }
+                } catch (e) {
+                    // Not JSON, append as-is
+                    setTaskLogs(logs => [...logs, `[LOG] ${line}`]);
+                }
             });
 
             console.log('[handleExecuteProject] Spawning sidecar...');
@@ -685,10 +721,13 @@ function App() {
 
             const payload = {
                 taskId: data.taskId,
+                projectId: project.id,
                 type: project.type,
                 prompt: project.prompt,
                 url: project.url,
                 screenshot: project.screenshot,
+                authToken: token,  // Pass auth token for material saving
+                serverUrl: 'http://localhost:8080',
                 llm: {
                     provider,
                     model,
@@ -795,13 +834,13 @@ function App() {
 
             // 3. Transition UI
             setActiveTaskId(data.taskId);
-            setActiveProject({ 
-                id: material.id, 
-                name: `Publish: ${material.name}`, 
-                prompt: material.content, 
-                url: localImagePath, 
-                type: 'xhs_publish', 
-                screenshot: false 
+            setActiveProject({
+                id: material.id,
+                name: `Publish: ${material.name}`,
+                prompt: material.content,
+                url: localImagePath,
+                type: 'xhs_publish',
+                screenshot: false
             });
             setDashView("task_detail");
             setTaskStatus("running");
@@ -862,14 +901,14 @@ function App() {
                     } else {
                         setTaskLogs(logs => [...logs, `[LOG] ${line}`]);
                     }
-                } catch(e) {
+                } catch (e) {
                     setTaskLogs(logs => [...logs, `[LOG] ${line}`]);
                 }
                 finalPlainTextResult += line + "\n";
             });
 
             const child = await command.spawn();
-            
+
             // Payload for xhs-agent
             const payload = {
                 taskId: data.taskId,
@@ -877,13 +916,298 @@ function App() {
                 content: material.content,
                 imagePath: localImagePath // xhs-agent now handles URL downloading
             };
-            
+
             await child.write(JSON.stringify(payload) + "\n");
             setTaskLogs(logs => [...logs, `[System] 指令已下发，正在启动小红书发布代理...`]);
 
         } catch (e: any) {
             showAlert("发布启动失败", e.message || "无法连接到执行引擎。");
             setLoading(false);
+        }
+    }
+
+    // ============ AI Workflow Dialog Handlers ============
+    function handleOpenAIWorkflowDialog(project: Project) {
+        setAIWorkflowProject(project);
+        setAIDialogMessages([
+            { role: 'system', content: `正在为项目「${project.name}」生成 AI 工作流...` }
+        ]);
+        setAIWorkflowSteps([]);
+        setAIGeneratedPrompt("");
+        setAIUserInput("");
+        setAIWorkflowLogs([]);
+        setAIWorkflowExecuting(false);
+        setAIHasStructuredSteps(false);
+        setIsAIWorkflowDialogOpen(true);
+
+        // Trigger initial workflow generation
+        handleAIWorkflowGenerate(project, 'generate');
+    }
+
+    async function handleAIWorkflowGenerate(project: Project, action: 'generate' | 'continue' | 'confirm', userMessage?: string) {
+        if (!token || !user) return;
+        setAIDialogLoading(true);
+
+        try {
+            // Get LLM config
+            let provider = 'openai';
+            let model = user.llmModel;
+            let apiKey = user.llmApiKey || '';
+            let baseURL = user.llmBaseUrl;
+
+            if (user.llmProvider === 'TaskMaster') {
+                try {
+                    const systemConfig = await apiRequest("/api/v1/llm-config", {
+                        headers: { Authorization: "Bearer " + token },
+                    }) as any;
+                    if (systemConfig.llmModel) model = systemConfig.llmModel;
+                    if (systemConfig.llmBaseUrl) baseURL = systemConfig.llmBaseUrl;
+                    if (systemConfig.llmApiKey) apiKey = systemConfig.llmApiKey;
+                } catch (e) {
+                    model = 'google/gemini-2.0-flash-exp:free';
+                    baseURL = 'https://openrouter.ai/api/v1';
+                }
+            } else {
+                if (!model) model = 'gpt-4o';
+                if (!baseURL) baseURL = 'https://api.openai.com/v1';
+            }
+
+            // Spawn sidecar for AI workflow
+            const command = Command.sidecar("binaries/hyperagent");
+
+            command.on('close', async (d) => {
+                setAIDialogLoading(false);
+                if (d.code !== 0) {
+                    setAIDialogMessages(msgs => [...msgs, { role: 'system', content: `工作流生成失败，退出码: ${d.code}` }]);
+                }
+            });
+
+            command.on('error', err => {
+                setAIDialogLoading(false);
+                setAIDialogMessages(msgs => [...msgs, { role: 'system', content: `错误: ${err}` }]);
+            });
+
+            command.stdout.on('data', line => {
+                try {
+                    const parsed = JSON.parse(line);
+                    if (parsed.status === 'success' && parsed.data) {
+                        // Add AI response to messages
+                        if (parsed.data.output) {
+                            setAIDialogMessages(msgs => [...msgs, { role: 'assistant', content: parsed.data.output }]);
+                        }
+                        // Update workflow steps
+                        if (parsed.data.workflowSteps) {
+                            setAIWorkflowSteps(parsed.data.workflowSteps);
+                        }
+                        // Update generated prompt
+                        if (parsed.data.generatedPrompt) {
+                            setAIGeneratedPrompt(parsed.data.generatedPrompt);
+                        }
+                        // Update structured steps flag
+                        setAIHasStructuredSteps(!!parsed.data.hasStructuredSteps);
+                        setAIDialogLoading(false);
+                    } else if (parsed.status === 'failed') {
+                        setAIDialogMessages(msgs => [...msgs, { role: 'system', content: `错误: ${parsed.error}` }]);
+                        setAIDialogLoading(false);
+                    }
+                } catch (e) {
+                    // Not valid JSON, ignore
+                }
+            });
+
+            command.stderr.on('data', line => {
+                try {
+                    const parsed = JSON.parse(line);
+                    if (parsed.type === 'log' || parsed.type === 'error') {
+                        const timestamp = new Date(parsed.timestamp).toLocaleTimeString();
+                        setAIWorkflowLogs(logs => [...logs, `[${parsed.type.toUpperCase()}] [${timestamp}] ${parsed.message}`]);
+                    } else {
+                        setAIWorkflowLogs(logs => [...logs, `[LOG] ${line}`]);
+                    }
+                } catch (e) {
+                    setAIWorkflowLogs(logs => [...logs, `[LOG] ${line}`]);
+                }
+            });
+
+            const child = await command.spawn();
+
+            // Build payload based on action
+            const payload = {
+                taskId: `ai-workflow-${Date.now()}`,
+                projectId: project.id,
+                type: 'ai_workflow',
+                action: action,
+                prompt: project.prompt,
+                url: project.url,
+                userMessage: userMessage,
+                authToken: token,
+                serverUrl: 'http://localhost:8080',
+                llm: { provider, model, apiKey, baseURL }
+            };
+
+            await child.write(JSON.stringify(payload) + "\n");
+
+        } catch (e: any) {
+            setAIDialogLoading(false);
+            setAIDialogMessages(msgs => [...msgs, { role: 'system', content: `启动失败: ${e.message}` }]);
+        }
+    }
+
+    async function handleAISendMessage() {
+        if (!aiUserInput.trim() || !aiWorkflowProject) return;
+
+        const userMessage = aiUserInput.trim();
+        setAIDialogMessages(msgs => [...msgs, { role: 'user', content: userMessage }]);
+        setAIUserInput("");
+
+        // Continue workflow with user feedback
+        await handleAIWorkflowGenerate(aiWorkflowProject, 'continue', userMessage);
+    }
+
+    async function handleAIConfirmWorkflow() {
+        if (!aiWorkflowProject || !aiGeneratedPrompt) return;
+
+        // Update the project's prompt with the generated workflow
+        try {
+            await apiRequest(`/api/v1/projects/${aiWorkflowProject.id}`, {
+                method: "PUT",
+                body: JSON.stringify({
+                    name: aiWorkflowProject.name,
+                    url: aiWorkflowProject.url,
+                    prompt: aiGeneratedPrompt,
+                    type: aiWorkflowProject.type,
+                    screenshot: aiWorkflowProject.screenshot
+                }),
+                headers: { Authorization: "Bearer " + token },
+            });
+
+            showAlert("工作流已保存", "AI 生成的工作流已成功保存到项目配置中。");
+            setIsAIWorkflowDialogOpen(false);
+            loadProjects();
+        } catch (e) {
+            showAlert("保存失败", "无法保存工作流配置。");
+        }
+    }
+
+    function handleCloseAIWorkflowDialog() {
+        setIsAIWorkflowDialogOpen(false);
+        setAIWorkflowProject(null);
+        setAIDialogMessages([]);
+        setAIWorkflowSteps([]);
+        setAIGeneratedPrompt("");
+        setAIWorkflowLogs([]);
+        setAIWorkflowExecuting(false);
+        setAIHasStructuredSteps(false);
+    }
+
+    // Execute the generated workflow directly
+    async function handleExecuteWorkflow() {
+        if (!aiWorkflowProject || !aiGeneratedPrompt || !token || !user) return;
+
+        setAIWorkflowExecuting(true);
+        setAIWorkflowLogs(logs => [...logs, '[System] 正在执行工作流...']);
+
+        try {
+            // Get LLM config
+            let provider = 'openai';
+            let model = user.llmModel;
+            let apiKey = user.llmApiKey || '';
+            let baseURL = user.llmBaseUrl;
+
+            if (user.llmProvider === 'TaskMaster') {
+                try {
+                    const systemConfig = await apiRequest("/api/v1/llm-config", {
+                        headers: { Authorization: "Bearer " + token },
+                    }) as any;
+                    if (systemConfig.llmModel) model = systemConfig.llmModel;
+                    if (systemConfig.llmBaseUrl) baseURL = systemConfig.llmBaseUrl;
+                    if (systemConfig.llmApiKey) apiKey = systemConfig.llmApiKey;
+                } catch (e) {
+                    model = 'google/gemini-2.0-flash-exp:free';
+                    baseURL = 'https://openrouter.ai/api/v1';
+                }
+            } else {
+                if (!model) model = 'gpt-4o';
+                if (!baseURL) baseURL = 'https://api.openai.com/v1';
+            }
+
+            // Fetch OSS credentials
+            let ossCredentials = null;
+            try {
+                ossCredentials = await apiRequest("/api/v1/oss-credentials", {
+                    headers: { Authorization: "Bearer " + token },
+                });
+            } catch (e) {
+                setAIWorkflowLogs(logs => [...logs, '[Warning] OSS凭证获取失败，截图功能可能不可用']);
+            }
+
+            // Spawn sidecar for execution
+            const command = Command.sidecar("binaries/hyperagent");
+
+            command.on('close', async (d) => {
+                setAIWorkflowExecuting(false);
+                setAIWorkflowLogs(logs => [...logs, `[System] 执行结束，退出码: ${d.code}`]);
+                if (d.code === 0) {
+                    setAIDialogMessages(msgs => [...msgs, { role: 'system', content: '✅ 工作流执行完成！' }]);
+                } else {
+                    setAIDialogMessages(msgs => [...msgs, { role: 'system', content: `❌ 工作流执行失败，退出码: ${d.code}` }]);
+                }
+            });
+
+            command.on('error', err => {
+                setAIWorkflowExecuting(false);
+                setAIWorkflowLogs(logs => [...logs, `[Error] ${err}`]);
+            });
+
+            command.stdout.on('data', line => {
+                setAIWorkflowLogs(logs => [...logs, `[OUT] ${line}`]);
+                try {
+                    const parsed = JSON.parse(line);
+                    if (parsed.status === 'success' && parsed.data?.output) {
+                        setAIDialogMessages(msgs => [...msgs, { role: 'assistant', content: `执行结果:\n${parsed.data.output}` }]);
+                    }
+                } catch (e) {
+                    // Not JSON, just log
+                }
+            });
+
+            command.stderr.on('data', line => {
+                try {
+                    const parsed = JSON.parse(line);
+                    if (parsed.type === 'log' || parsed.type === 'error') {
+                        const timestamp = new Date(parsed.timestamp).toLocaleTimeString();
+                        setAIWorkflowLogs(logs => [...logs, `[${parsed.type.toUpperCase()}] [${timestamp}] ${parsed.message}`]);
+                    } else {
+                        setAIWorkflowLogs(logs => [...logs, `[LOG] ${line}`]);
+                    }
+                } catch (e) {
+                    setAIWorkflowLogs(logs => [...logs, `[LOG] ${line}`]);
+                }
+            });
+
+            const child = await command.spawn();
+
+            // Build execution payload using the generated prompt
+            const taskId = `exec-${Date.now()}`;
+            const payload = {
+                taskId: taskId,
+                projectId: aiWorkflowProject.id,
+                type: 'workflow',
+                prompt: aiGeneratedPrompt,  // Use the AI-generated prompt
+                url: aiWorkflowProject.url,
+                screenshot: aiWorkflowProject.screenshot,
+                authToken: token,
+                serverUrl: 'http://localhost:8080',
+                llm: { provider, model, apiKey, baseURL },
+                oss: ossCredentials
+            };
+
+            await child.write(JSON.stringify(payload) + "\n");
+            setAIWorkflowLogs(logs => [...logs, `[System] 指令已下发，任务ID: ${taskId}`]);
+
+        } catch (e: any) {
+            setAIWorkflowExecuting(false);
+            setAIWorkflowLogs(logs => [...logs, `[Error] 启动失败: ${e.message}`]);
         }
     }
 
@@ -912,9 +1236,7 @@ function App() {
     const SidebarContent = () => (
         <>
             <div className="flex h-16 items-center gap-3 px-6 border-b border-slate-200 dark:border-slate-800">
-                <div className="size-8 rounded bg-gradient-primary flex items-center justify-center text-white shadow-md shadow-blue-600/20">
-                    <span className="material-symbols-outlined" style={{ fontSize: "20px" }}>check_circle</span>
-                </div>
+                <img src="/logo-v2-1.png" alt="Logo" className="h-8" />
                 <h1 className="text-lg font-bold bg-gradient-to-r from-blue-700 to-purple-700 dark:from-blue-500 dark:to-purple-500 bg-clip-text text-transparent">任务大师</h1>
             </div>
             <nav className="flex-1 overflow-y-auto px-4 py-6">
@@ -1004,7 +1326,7 @@ function App() {
                     <div className="flex items-center gap-4">
                         <div className="flex items-center gap-2">
                             <span className="text-sm font-medium text-slate-700 dark:text-slate-300 hidden sm:block">{user?.email}</span>
-                            <div className="size-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-bold text-xs">{user?.email.substring(0, 2).toUpperCase()}</div>
+                            <div className="size-8 rounded-full bg-gradient-to-br from-[#5384FC] to-[#F82CC0] flex items-center justify-center text-white font-bold text-xs">{user?.email.substring(0, 2).toUpperCase()}</div>
                         </div>
                     </div>
                 </header>
@@ -1067,11 +1389,12 @@ function App() {
                                 {projectsList.length === 0 ? <div className="text-center py-20 text-slate-500 bg-surface-light dark:bg-surface-dark rounded-xl border border-dashed border-slate-300 dark:border-slate-700">尚未创建项目</div> : projectsList.map(p => (
                                     <div key={p.id} className="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 flex items-center justify-between">
                                         <div className="flex-1">
-                                            <div className="flex items-center gap-3 mb-1"><h4 className="text-lg font-bold text-slate-900 dark:text-white">{p.name}</h4><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${p.type === 'workflow' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{p.type}</span></div>
-                                            <p className="text-sm text-slate-500 line-clamp-1">{p.url || '无起始 URL'} | {p.prompt}</p>
+                                            <div className="flex items-center gap-3 mb-1"><h4 className="text-lg font-bold text-slate-900 dark:text-white">{p.name}</h4><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${p.type === 'workflow' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{p.type === 'workflow' ? '自动工作流' : '抓取'}</span></div>
+                                            <p className="text-sm text-slate-500 line-clamp-1">{p.prompt}</p>
                                         </div>
                                         <div className="flex gap-3">
-                                            <button onClick={() => handleExecuteProject(p)} className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-blue-700 transition-colors shadow-sm"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>play_arrow</span>启动</button>
+                                            <button onClick={() => handleExecuteProject(p)} className="flex items-center gap-2 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 px-4 py-2 rounded-lg text-sm font-bold hover:bg-purple-200 dark:hover:bg-purple-900/50 transition-colors shadow-sm"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>play_arrow</span>启动</button>
+                                            {/* <button onClick={() => { handleOpenAIWorkflowDialog(p); }} className="flex items-center gap-2 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 px-4 py-2 rounded-lg text-sm font-bold hover:bg-purple-200 dark:hover:bg-purple-900/50 transition-colors shadow-sm"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>auto_awesome</span>AI生成</button> */}
                                             <button onClick={() => handleOpenEditModal(p)} className="p-2 rounded-lg text-slate-400 hover:text-accent-blue hover:bg-blue-50 dark:hover:bg-red-900/20 transition-colors"><span className="material-symbols-outlined">edit</span></button>
                                             <button onClick={() => handleDeleteProject(p.id)} className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"><span className="material-symbols-outlined">delete</span></button>
                                         </div>
@@ -1132,6 +1455,7 @@ function App() {
                                 <div className="flex items-center justify-between px-4 py-2 bg-[#252526] border-b border-[#333]"><div className="flex items-center gap-2 text-slate-300 text-xs font-medium uppercase tracking-wider"><span className="material-symbols-outlined" style={{ fontSize: "16px" }}>terminal</span>实时日志</div><div className="flex items-center gap-2"><span className={`size-2 rounded-full ${taskStatus === 'running' ? 'bg-green-500 animate-pulse' : 'bg-slate-500'}`}></span><span className="text-xs text-slate-400">{taskStatus === 'running' ? 'Live' : 'Stopped'}</span></div></div>
                                 <div className="flex-1 overflow-y-auto p-4 font-mono text-[11px] text-slate-300 leading-relaxed scroll-smooth">{taskLogs.length === 0 && <span className="text-slate-500 italic">Waiting for logs...</span>}{taskLogs.map((log, i) => (<div key={i} className="mb-1 break-words whitespace-pre-wrap">{log}</div>))}<div ref={logsEndRef} /></div>
                             </div>
+                            <div className="h-32"></div>
                         </div>
                     )}
 
@@ -1318,13 +1642,18 @@ function App() {
                         <form onSubmit={handleSubmitProject} className="flex flex-col gap-4">
                             <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">项目名称</label><input type="text" className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" placeholder="例如：每日竞品抓取" value={projectName} onChange={(e) => setProjectName(e.target.value)} required /></div>
                             <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">任务类型</label><div className="flex gap-4"><button type="button" onClick={() => setProjectType('workflow')} className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${projectType === 'workflow' ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
-                            ><span className="text-sm font-bold text-slate-900 dark:text-white">自动工作流</span><span className="text-[10px] text-slate-500">执行复杂交互自动化</span></button><button type="button" onClick={() => setProjectType('scrape')} className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${projectType === 'scrape' ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
+                            ><span className="text-sm font-bold text-slate-900 dark:text-white">自动工作流</span><span className="text-[10px] text-slate-500">执行复杂交互自动化</span></button><button type="button" onClick={() => { }} className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all border-slate-200 dark:border-slate-700 opacity-50 cursor-not-allowed`}
                             ><span className="text-sm font-bold text-slate-900 dark:text-white">网页抓取</span><span className="text-[10px] text-slate-500">提取结构化数据</span></button></div></div>
-                            <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">起始 URL</label><input type="url" className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" placeholder="https://..." value={projectUrl} onChange={(e) => setProjectUrl(e.target.value)} /></div>
-                            <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">AI 提示词 (Prompt)</label><textarea className="w-full rounded-lg border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" rows={4} placeholder="描述需要自动完成的操作步骤..." value={projectPrompt} onChange={(e) => setProjectPrompt(e.target.value)} required /></div>
-                            <div className="flex items-center">
-                                <input id="screenshot-checkbox" type="checkbox" checked={projectScreenshot} onChange={(e) => setProjectScreenshot(e.target.checked)} className="h-4 w-4 rounded text-blue-600 focus:ring-blue-500" />
-                                <label htmlFor="screenshot-checkbox" className="ml-2 block text-sm text-slate-900 dark:text-slate-300 select-none cursor-pointer">任务结束后截图</label>
+                            <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">任务平台</label><div className="flex gap-4"><button type="button" className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all border-accent-blue bg-blue-50 dark:bg-blue-900/20`}
+                            ><div className="flex items-center gap-2"><img src="/src/assets/小红书.svg" alt="小红书" className="w-5 h-5" /><span className="text-sm font-bold text-slate-900 dark:text-white">小红书笔记</span></div><span className="text-[10px] text-slate-500">当前仅支持小红书</span></button><button type="button" className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all border-slate-200 dark:border-slate-700 opacity-50 cursor-not-allowed`}
+                            ><div className="flex items-center gap-2"><img src="/src/assets/视频号.svg" alt="视频号" className="w-5 h-5" /><span className="text-sm font-bold text-slate-900 dark:text-white">微信视频号</span></div><span className="text-[10px] text-slate-500">即将上线</span></button></div></div>
+                            <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">是否使用 AI 改写</label><div className="flex gap-4"><button type="button" onClick={() => setUseAIRewrite(true)} className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${useAIRewrite ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
+                            ><span className="text-sm font-bold text-slate-900 dark:text-white">是</span><span className="text-[10px] text-slate-500">AI将自动改写发布正文</span></button><button type="button" onClick={() => setUseAIRewrite(false)} className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${!useAIRewrite ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
+                            ><span className="text-sm font-bold text-slate-900 dark:text-white">否</span><span className="text-[10px] text-slate-500">使用素材内容发布</span></button></div></div>
+                            {useAIRewrite && <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">AI 提示词 (Prompt) <span className="text-red-500">*</span></label><textarea className="w-full rounded-lg border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" rows={4} placeholder="描述需要自动完成的操作步骤..." value={projectPrompt} onChange={(e) => setProjectPrompt(e.target.value)} required /></div>}
+                            <div className="flex items-center gap-2 p-3 rounded-lg bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800">
+                                <span className="material-symbols-outlined text-purple-600" style={{ fontSize: "18px" }}>auto_awesome</span>
+                                <span className="text-xs text-purple-700 dark:text-purple-300">AI有时候会犯错，请认真甄别</span>
                             </div>
                             <div className="mt-4 flex justify-end gap-3"><button type="button" onClick={() => setIsProjectModalOpen(false)} className="px-4 py-2 text-sm font-medium text-slate-500">取消</button><button type="submit" disabled={loading} className="bg-gradient-primary text-white px-6 py-2 rounded-lg text-sm font-bold shadow-lg">{loading ? "处理中..." : (isEditing ? "保存修改" : "保存项目")}</button></div>
                         </form>
@@ -1362,6 +1691,159 @@ function App() {
                                     {globalModal.type === 'confirm' ? globalModal.confirmText : "好的"}
                                 </button>
                             </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* AI Workflow Dialog */}
+            {isAIWorkflowDialogOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                    <div className="w-full max-w-4xl h-[85vh] rounded-xl bg-surface-light dark:bg-surface-dark shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col animate-in zoom-in-95 duration-200">
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800">
+                            <div className="flex items-center gap-3">
+                                <div className="size-10 rounded-full bg-gradient-to-r from-purple-600 to-pink-600 flex items-center justify-center text-white">
+                                    <span className="material-symbols-outlined" style={{ fontSize: "20px" }}>auto_awesome</span>
+                                </div>
+                                <div>
+                                    <h3 className="text-lg font-bold text-slate-900 dark:text-white">AI 工作流生成</h3>
+                                    <p className="text-xs text-slate-500">{aiWorkflowProject?.name}</p>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                {aiGeneratedPrompt && aiHasStructuredSteps && !aiDialogLoading && (
+                                    <button
+                                        onClick={handleExecuteWorkflow}
+                                        disabled={aiWorkflowExecuting}
+                                        className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-green-700 transition-colors disabled:opacity-50 shadow-sm"
+                                    >
+                                        <span className="material-symbols-outlined" style={{ fontSize: "18px" }}>{aiWorkflowExecuting ? 'sync' : 'play_arrow'}</span>
+                                        执行工作流
+                                    </button>
+                                )}
+                                <button onClick={handleCloseAIWorkflowDialog} className="rounded-full p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+                                    <span className="material-symbols-outlined">close</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Messages Container */}
+                        <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-4">
+                            {aiDialogMessages.map((msg, idx) => (
+                                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                    <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${msg.role === 'user'
+                                        ? 'bg-blue-600 text-white'
+                                        : msg.role === 'system'
+                                            ? 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-sm italic'
+                                            : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white'
+                                        }`}>
+                                        {msg.role === 'assistant' && (
+                                            <div className="flex items-center gap-2 mb-2">
+                                                <span className="material-symbols-outlined text-purple-500" style={{ fontSize: "16px" }}>smart_toy</span>
+                                                <span className="text-xs font-bold text-purple-500">AI 助手</span>
+                                            </div>
+                                        )}
+                                        <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                                    </div>
+                                </div>
+                            ))}
+
+                            {/* Loading Indicator */}
+                            {aiDialogLoading && (
+                                <div className="flex justify-start">
+                                    <div className="bg-slate-100 dark:bg-slate-800 rounded-2xl px-4 py-3 flex items-center gap-2">
+                                        <div className="flex gap-1">
+                                            <div className="size-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                                            <div className="size-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                                            <div className="size-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                                        </div>
+                                        <span className="text-sm text-slate-500">AI 正在思考...</span>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Workflow Steps Preview */}
+                            {aiWorkflowSteps.length > 0 && (
+                                <div className="bg-purple-50 dark:bg-purple-900/20 rounded-xl p-4 border border-purple-200 dark:border-purple-800">
+                                    <div className="flex items-center gap-2 mb-3">
+                                        <span className="material-symbols-outlined text-purple-600" style={{ fontSize: "18px" }}>list_alt</span>
+                                        <span className="text-sm font-bold text-purple-700 dark:text-purple-400">工作流步骤预览</span>
+                                    </div>
+                                    <div className="flex flex-col gap-2">
+                                        {aiWorkflowSteps.map((step, idx) => (
+                                            <div key={idx} className="flex items-start gap-3 text-sm">
+                                                <span className="flex-shrink-0 size-6 rounded-full bg-purple-200 dark:bg-purple-800 text-purple-700 dark:text-purple-300 flex items-center justify-center text-xs font-bold">{step.idx || idx + 1}</span>
+                                                <div>
+                                                    <span className="font-medium text-slate-900 dark:text-white">{step.action}</span>
+                                                    <p className="text-slate-500 text-xs mt-0.5">{step.description}</p>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Execution Logs Panel */}
+                            {aiWorkflowLogs.length > 0 && (
+                                <div className="bg-slate-900 dark:bg-slate-950 rounded-xl p-4 border border-slate-700">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <div className="flex items-center gap-2">
+                                            <span className="material-symbols-outlined text-green-500" style={{ fontSize: "18px" }}>terminal</span>
+                                            <span className="text-sm font-bold text-slate-300">执行日志</span>
+                                        </div>
+                                        <span className="text-xs text-slate-500">{aiWorkflowLogs.length} 条</span>
+                                    </div>
+                                    <div className="max-h-40 overflow-y-auto font-mono text-xs text-slate-400 space-y-1">
+                                        {aiWorkflowLogs.slice(-20).map((log, idx) => (
+                                            <div key={idx} className={`${log.includes('[Error]') ? 'text-red-400' : log.includes('[System]') ? 'text-blue-400' : log.includes('[Warning]') ? 'text-yellow-400' : ''}`}>
+                                                {log}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Input Area */}
+                        <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-800">
+                            <div className="flex gap-3">
+                                <input
+                                    type="text"
+                                    value={aiUserInput}
+                                    onChange={(e) => setAIUserInput(e.target.value)}
+                                    onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleAISendMessage()}
+                                    placeholder="输入您的反馈或修改建议..."
+                                    disabled={aiDialogLoading}
+                                    className="flex-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-4 py-2.5 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50"
+                                />
+                                <button
+                                    onClick={handleAISendMessage}
+                                    disabled={aiDialogLoading || !aiUserInput.trim()}
+                                    className="px-4 py-2.5 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-sm font-medium hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors disabled:opacity-50"
+                                >
+                                    <span className="material-symbols-outlined" style={{ fontSize: "18px" }}>send</span>
+                                </button>
+                            </div>
+
+                            {/* Action Buttons */}
+                            {aiGeneratedPrompt && !aiDialogLoading && (
+                                <div className="flex justify-end gap-3 mt-4">
+                                    <button
+                                        onClick={handleCloseAIWorkflowDialog}
+                                        className="px-4 py-2 text-sm font-medium text-slate-500 hover:text-slate-700 transition-colors"
+                                    >
+                                        取消
+                                    </button>
+                                    <button
+                                        onClick={handleAIConfirmWorkflow}
+                                        className="px-6 py-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-lg text-sm font-bold hover:from-purple-700 hover:to-pink-700 transition-all shadow-lg flex items-center gap-2"
+                                    >
+                                        <span className="material-symbols-outlined" style={{ fontSize: "16px" }}>check_circle</span>
+                                        确认并保存工作流
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>
