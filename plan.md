@@ -104,6 +104,21 @@ github： git@github.com:zalsay/auto-tauri.git
   - 仪表盘「开始新任务」改为「创建新项目」。
   - 增加「项目列表」页面，每个项目提供「立即执行」按钮。
 
+### 第六阶段：Playwright Agent 对话式代码生成器（进行中）
+- [x] **Agent 核心模块** (`playwright-agent/`)
+  - [x] 对话解析器 `parser.ts`：自然语言 → 操作意图
+  - [x] 代码生成器 `codeGenerator.ts`：操作意图 → Playwright 代码
+  - [x] 操作录制器 `actionRecorder.ts`：浏览器事件录制
+  - [x] 浏览器管理器 `browserManager.ts`：持久化上下文
+  - [x] WebSocket 服务 `wsServer.ts`：实时双向通信
+- [x] **前端交互界面** (`desktop/src/`)
+  - [x] `AgentStudio.tsx`：左右分栏主页面
+  - [x] `ChatPanel.tsx`：对话面板
+  - [x] `BrowserPreview.tsx`：浏览器预览 + 代码展示
+- [ ] **后端 API**
+  - [ ] Agent 会话管理
+  - [ ] 脚本存储 (DB/OSS)
+
 ### 第四、五阶段：持久化与优化（待进行）
 - [ ] 结果本地化存储。
 - [x] 自动化结果展示与导出。

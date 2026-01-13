@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { getMaterials, createMaterial, deleteMaterial, updateMaterial, Material } from './api';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { getMaterials, createMaterial, deleteMaterial, Material } from './api';
 import { getStoredToken } from './api';
 import { uploadToOSSSimple } from './ossUpload';
 
@@ -604,6 +606,8 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
                         <div className="flex flex-col gap-4">
                             <div>
                                 <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">目标平台</label>
+                                <select
+                                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">发布平台</label>
                                 <select
                                     className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
                                     value={publishPlatform}
