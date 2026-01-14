@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri --manifest-path ../framework/src-tauri/Cargo.toml"
+    "tauri": "tauri",
+    "tauri:dev": "cd ../framework/src-tauri && npx tauri dev",
+    "tauri:build": "cd ../framework/src-tauri && npx tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
