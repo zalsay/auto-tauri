@@ -76,6 +76,10 @@ func main() {
 
 			// OSS Upload
 			auth.GET("/oss/temp-token", getOSSTempTokenHandler)
+
+			// LLM
+			auth.POST("/llm/chat", llmChatHandler)
+
 		}
 	}
 

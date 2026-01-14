@@ -8,15 +8,20 @@ import { uploadToOSSSimple } from './ossUpload';
 interface Project {
     id: string;
     name: string;
-    // Add other project fields if needed for other functionalities
+    url: string;
+    prompt: string;
+    type: string;
+    screenshot: boolean;
+    platform?: string;
+    useAIRewrite?: boolean;
 }
 
 interface MaterialCenterProps {
     projectsList: Project[];
-    onPublish: (material: Material, platform: string, title: string, imageUrl: string) => void;
+    onOpenPublishDialog?: (project: Project, materialId?: string) => void;
 }
 
-const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish }) => {
+const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onOpenPublishDialog }) => {
     const [materials, setMaterials] = useState<Material[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -33,11 +38,7 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // Publish Modal State
-    const [isPublishModalOpen, setIsPublishModalOpen] = useState(false);
-    const [selectedMaterial, setSelectedMaterial] = useState<Material | null>(null);
-    const [publishTitle, setPublishTitle] = useState('');
-    const [publishPlatform, setPublishPlatform] = useState('xhs');
-    const [publishImageUrl, setPublishImageUrl] = useState('');
+
 
     // View Modal State
     const [isViewModalOpen, setIsViewModalOpen] = useState(false);
@@ -50,7 +51,7 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
     const [editContent, setEditContent] = useState('');
     const [editProjectId, setEditProjectId] = useState('');
     const [editLoading, setEditLoading] = useState(false);
-    const [editImageInputMode, setEditImageInputMode] = useState<'url' | 'upload'>('url');
+    const [tempUrlInput, setTempUrlInput] = useState('');
     const [editImageUrl, setEditImageUrl] = useState('');
     const [editIsUploading, setEditIsUploading] = useState(false);
     const [editUploadProgress, setEditUploadProgress] = useState(0);
@@ -161,13 +162,6 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
         }
     };
 
-    const openPublishModal = (material: Material) => {
-        setSelectedMaterial(material);
-        setPublishTitle(material.name);
-        setPublishImageUrl(material.type === 'image' ? material.content : '');
-        setIsPublishModalOpen(true);
-    };
-
     const openViewModal = (material: Material) => {
         setViewingMaterial(material);
         setIsViewModalOpen(true);
@@ -179,7 +173,7 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
         setEditContent(material.content);
         setEditProjectId(material.projectId || '');
         setEditImageUrl((material as any).imageUrls || '');
-        setEditImageInputMode('url');
+        setTempUrlInput('');
         setIsEditModalOpen(true);
     };
 
@@ -208,19 +202,6 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
         }
     };
 
-    const handlePublishClick = () => {
-        if (selectedMaterial) {
-            if (typeof onPublish !== 'function') {
-                console.error('onPublish is not a function:', onPublish);
-                return;
-            }
-            // If it's an image material, use its content as image URL if not overridden
-            const finalImageUrl = publishImageUrl || (selectedMaterial.type === 'image' ? selectedMaterial.content : '');
-            onPublish(selectedMaterial, publishPlatform, publishTitle, finalImageUrl);
-            setIsPublishModalOpen(false);
-        }
-    };
-
     return (
         <div className="mx-auto max-w-7xl flex flex-col gap-8">
             {/* Create Material Form */}
@@ -233,13 +214,16 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
                 <form onSubmit={handleCreateMaterial} className="flex flex-col gap-4">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
-                            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">名称</label>
+                            <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                                名称 <span className="text-xs text-slate-400 font-normal">({newName.length}/20)</span>
+                            </label>
                             <input
                                 type="text"
                                 className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
                                 placeholder="例如：广告文案片段"
                                 value={newName}
                                 onChange={(e) => setNewName(e.target.value)}
+                                maxLength={20}
                                 required
                             />
                         </div>
@@ -365,10 +349,10 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
 
                         {/* Preview */}
                         {previewUrl && (
-                            <div className="grid grid-cols-3 gap-2">
+                            <div className="grid grid-cols-3 gap-4">
                                 {previewUrl.split('\n').filter(u => u.trim()).map((url, idx) => (
-                                    <div key={idx} className="relative rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 group">
-                                        <img src={url} alt={`预览${idx + 1}`} className="w-full h-20 object-cover bg-slate-50 dark:bg-slate-900" />
+                                    <div key={idx} className="relative rounded-lg overflow-hidden group">
+                                        <img src={url} alt={`预览${idx + 1}`} className="w-full h-40 object-contain rounded-lg" />
                                         <button
                                             type="button"
                                             onClick={() => {
@@ -411,13 +395,12 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
                             <div key={material.id} className="rounded-xl bg-surface-light p-5 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 flex flex-col gap-3">
                                 <div className="flex justify-between items-start">
                                     <h4 className="font-bold text-slate-900 dark:text-white truncate flex-1" title={material.name}>{material.name}</h4>
-                                    <span className="ml-2 px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-[10px] text-slate-500 whitespace-nowrap">{material.type}</span>
                                 </div>
 
                                 {material.projectId && projectMap.has(material.projectId) && (
                                     <div className="text-[11px] text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20 px-2 py-1 rounded-md flex items-center gap-1.5">
                                         <span className="material-symbols-outlined" style={{ fontSize: "14px" }}>link</span>
-                                        <span>来源项目: {projectMap.get(material.projectId)}</span>
+                                        <span>关联项目: {projectMap.get(material.projectId)}</span>
                                     </div>
                                 )}
 
@@ -431,8 +414,19 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
                                     <button onClick={() => openEditModal(material)} className="flex items-center gap-1 bg-amber-50 dark:bg-amber-900/20 text-amber-600 px-2.5 py-1.5 rounded-lg text-xs font-medium hover:bg-amber-100 transition-colors whitespace-nowrap" title="编辑">
                                         <span className="material-symbols-outlined text-[14px]">edit</span>
                                     </button>
-                                    <button onClick={() => openPublishModal(material)} className="flex items-center gap-1 bg-blue-50 dark:bg-blue-900/20 text-accent-blue px-2.5 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-100 transition-colors whitespace-nowrap" title="工作流">
-                                        <span className="material-symbols-outlined text-[14px]">account_tree</span>
+                                    <button onClick={() => {
+                                        if (onOpenPublishDialog && material.projectId) {
+                                            const project = projectsList.find(p => p.id === material.projectId);
+                                            if (project) {
+                                                onOpenPublishDialog(project, material.id);
+                                            } else {
+                                                alert("未找到关联项目，无法启动。");
+                                            }
+                                        } else if (!material.projectId) {
+                                            alert("该素材未关联项目，请先编辑关联项目。");
+                                        }
+                                    }} className="flex items-center gap-1 bg-blue-50 dark:bg-blue-900/20 text-accent-blue px-2.5 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-100 transition-colors whitespace-nowrap" title="启动">
+                                        <span className="material-symbols-outlined text-[14px]">play_arrow</span>
                                     </button>
                                     <button
                                         onClick={() => handleDeleteClick(material.id)}
@@ -455,25 +449,28 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
             {isDeleteModalOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
                     <div className="w-full max-w-sm rounded-xl bg-surface-light dark:bg-surface-dark p-6 shadow-2xl border border-slate-200 dark:border-slate-800 scale-100 animate-in zoom-in-95 duration-200">
-                        <div className="mb-4">
-                            <h3 className="text-lg font-bold text-slate-900 dark:text-white">确认删除</h3>
-                            <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
-                                删除后无法恢复，确定要继续吗？
-                            </p>
-                        </div>
-                        <div className="flex gap-3 justify-end">
-                            <button
-                                onClick={() => setIsDeleteModalOpen(false)}
-                                className="px-4 py-2 rounded-lg text-sm font-medium text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                            >
-                                取消
-                            </button>
-                            <button
-                                onClick={confirmDelete}
-                                className="px-4 py-2 rounded-lg text-sm font-bold text-white bg-red-600 hover:bg-red-700 shadow-lg transition-colors"
-                            >
-                                确认删除
-                            </button>
+                        <div className="flex flex-col items-center text-center gap-4">
+                            <img src="/logo-v2-1.png" alt="Logo" className="w-16 h-16 object-contain mb-2" />
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-900 dark:text-white">确认删除</h3>
+                                <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+                                    删除后无法恢复，确定要继续吗？
+                                </p>
+                            </div>
+                            <div className="mt-2 flex w-full gap-3">
+                                <button
+                                    onClick={() => setIsDeleteModalOpen(false)}
+                                    className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                                >
+                                    取消
+                                </button>
+                                <button
+                                    onClick={confirmDelete}
+                                    className="flex-1 px-4 py-2.5 rounded-xl text-white text-sm font-bold shadow-lg transition-all active:scale-95 bg-gradient-primary hover:opacity-90"
+                                >
+                                    确认删除
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -491,12 +488,15 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
                         </div>
                         <div className="flex flex-col gap-4">
                             <div>
-                                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">名称</label>
+                                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                                    名称 <span className="text-xs text-slate-400 font-normal">({editName.length}/20)</span>
+                                </label>
                                 <input
                                     type="text"
                                     className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
                                     value={editName}
                                     onChange={(e) => setEditName(e.target.value)}
+                                    maxLength={20}
                                 />
                             </div>
                             <div>
@@ -527,114 +527,128 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
 
                             {/* Image Upload for Edit */}
                             <div className="flex flex-col gap-3">
-                                <label className="text-sm font-medium text-slate-700 dark:text-slate-300">图片</label>
-                                <div className="flex gap-4">
-                                    <button
-                                        type="button"
-                                        onClick={() => setEditImageInputMode('url')}
-                                        className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${editImageInputMode === 'url' ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
-                                    >
-                                        <span className="text-sm font-bold text-slate-900 dark:text-white">输入URL</span>
-                                        <span className="text-[10px] text-slate-500">粘贴图片链接地址</span>
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => setEditImageInputMode('upload')}
-                                        className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${editImageInputMode === 'upload' ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
-                                    >
-                                        <span className="text-sm font-bold text-slate-900 dark:text-white">上传文件</span>
-                                        <span className="text-[10px] text-slate-500">从本地选择图片</span>
-                                    </button>
-                                </div>
+                                <label className="text-sm font-medium text-slate-700 dark:text-slate-300">图片 ({editImageUrl.split('\n').filter(u => u.trim()).length}/9)</label>
 
-                                {editImageInputMode === 'url' ? (
-                                    <div>
-                                        <textarea
-                                            className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
-                                            placeholder="输入图片 URL（每行一个，最多9张）..."
-                                            rows={3}
-                                            value={editImageUrl}
-                                            onChange={(e) => {
-                                                const urls = e.target.value.split('\n').filter(u => u.trim()).slice(0, 9);
-                                                setEditImageUrl(urls.join('\n'));
-                                            }}
-                                        />
-                                        <p className="text-xs text-slate-500 mt-1">已添加 {editImageUrl.split('\n').filter(u => u.trim()).length}/9 张图片</p>
-                                    </div>
-                                ) : (
-                                    <div className="flex flex-col gap-2">
-                                        <input
-                                            ref={editFileInputRef}
-                                            type="file"
-                                            accept=".jpg,.jpeg,.png,.gif,.webp,.bmp,.svg"
-                                            multiple
-                                            className="hidden"
-                                            onChange={async (e) => {
-                                                const files = Array.from(e.target.files || []);
-                                                if (files.length === 0) return;
-
-                                                const currentUrls = editImageUrl.split('\n').filter(u => u.trim());
-                                                const remainingSlots = 9 - currentUrls.length;
-                                                const filesToUpload = files.slice(0, remainingSlots);
-
-                                                setEditIsUploading(true);
-                                                setEditUploadProgress(0);
-                                                try {
-                                                    const newUrls: string[] = [];
-                                                    for (let i = 0; i < filesToUpload.length; i++) {
-                                                        const url = await uploadToOSSSimple(filesToUpload[i]);
-                                                        newUrls.push(url);
-                                                        setEditUploadProgress(Math.round(((i + 1) / filesToUpload.length) * 100));
-                                                    }
-                                                    setEditImageUrl([...currentUrls, ...newUrls].join('\n'));
-                                                } catch (err: any) {
-                                                    setError(err.message || '上传失败');
-                                                } finally {
-                                                    setEditIsUploading(false);
-                                                }
-                                            }}
-                                        />
-                                        <button
-                                            type="button"
-                                            onClick={() => editFileInputRef.current?.click()}
-                                            disabled={editIsUploading || editImageUrl.split('\n').filter(u => u.trim()).length >= 9}
-                                            className="flex items-center justify-center gap-2 w-full p-4 rounded-lg border-2 border-dashed border-slate-300 dark:border-slate-600 hover:border-blue-400 transition-colors disabled:opacity-50"
-                                        >
-                                            <span className="material-symbols-outlined text-slate-400">cloud_upload</span>
-                                            <span className="text-sm text-slate-500">
-                                                {editIsUploading ? `上传中... ${editUploadProgress}%` : `点击选择图片（最多9张，已选${editImageUrl.split('\n').filter(u => u.trim()).length}张）`}
-                                            </span>
-                                        </button>
-                                        {editIsUploading && (
-                                            <div className="w-full bg-slate-200 rounded-full h-1.5">
-                                                <div className="bg-blue-500 h-1.5 rounded-full transition-all" style={{ width: `${editUploadProgress}%` }}></div>
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-
-                                {/* Preview */}
-                                {editImageUrl && (
-                                    <div className="grid grid-cols-3 gap-2">
-                                        {editImageUrl.split('\n').filter(u => u.trim()).map((url, idx) => (
-                                            <div key={idx} className="relative rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 group">
-                                                <img src={url} alt={`预览${idx + 1}`} className="w-full h-20 object-cover bg-slate-50 dark:bg-slate-900" />
+                                {/* Image Grid Preview */}
+                                {editImageUrl.trim() && (
+                                    <div className="grid grid-cols-3 gap-3 mb-2">
+                                        {editImageUrl.split('\n').filter(u => u.trim()).map((url, index) => (
+                                            <div key={index} className="relative group aspect-square rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800">
+                                                <img src={url} alt={`Preview ${index + 1}`} className="w-full h-full object-cover" />
                                                 <button
-                                                    type="button"
                                                     onClick={() => {
-                                                        const urls = editImageUrl.split('\n').filter(u => u.trim());
-                                                        urls.splice(idx, 1);
-                                                        setEditImageUrl(urls.join('\n'));
+                                                        const currentUrls = editImageUrl.split('\n').filter(u => u.trim());
+                                                        currentUrls.splice(index, 1);
+                                                        setEditImageUrl(currentUrls.join('\n'));
                                                     }}
-                                                    className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                                                    className="absolute top-1 right-1 p-1 rounded-full bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500"
                                                 >
-                                                    <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>close</span>
+                                                    <span className="material-symbols-outlined text-[16px]">close</span>
                                                 </button>
                                             </div>
                                         ))}
                                     </div>
                                 )}
+
+                                {/* Add URL Section */}
+                                <div className="flex gap-2">
+                                    <div className="flex-1 flex gap-2">
+                                        <input
+                                            type="text"
+                                            className="flex-1 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm dark:bg-slate-800 dark:border-slate-700 text-black dark:text-white"
+                                            placeholder="输入图片 URL..."
+                                            value={tempUrlInput}
+                                            onChange={(e) => setTempUrlInput(e.target.value)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                    e.preventDefault();
+                                                    if (tempUrlInput.trim()) {
+                                                        const currentUrls = editImageUrl.split('\n').filter(u => u.trim());
+                                                        if (currentUrls.length >= 9) {
+                                                            alert('最多只能添加9张图片');
+                                                            return;
+                                                        }
+                                                        setEditImageUrl([...currentUrls, tempUrlInput.trim()].join('\n'));
+                                                        setTempUrlInput('');
+                                                    }
+                                                }
+                                            }}
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                if (tempUrlInput.trim()) {
+                                                    const currentUrls = editImageUrl.split('\n').filter(u => u.trim());
+                                                    if (currentUrls.length >= 9) {
+                                                        alert('最多只能添加9张图片');
+                                                        return;
+                                                    }
+                                                    setEditImageUrl([...currentUrls, tempUrlInput.trim()].join('\n'));
+                                                    setTempUrlInput('');
+                                                }
+                                            }}
+                                            className="px-3 py-2 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-sm font-medium hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors"
+                                        >
+                                            添加
+                                        </button>
+                                    </div>
+                                    <div className="flex flex-col">
+                                        <button
+                                            type="button"
+                                            onClick={() => editFileInputRef.current?.click()}
+                                            disabled={editIsUploading}
+                                            className="px-3 py-2 rounded-lg bg-blue-50 text-accent-blue border border-blue-200 dark:bg-blue-900/20 dark:border-blue-800 text-sm font-medium hover:bg-blue-100 transition-colors flex items-center gap-1 disabled:opacity-50"
+                                        >
+                                            <span className="material-symbols-outlined text-[18px]">upload_file</span>
+                                            {editIsUploading ? `${editUploadProgress}%` : '上传'}
+                                        </button>
+                                    </div>
+                                </div>
+                                <p className="text-xs text-slate-500">支持添加网络图片链接或上传本地图片</p>
+
+                                {/* Hidden File Input */}
+                                <input
+                                    ref={editFileInputRef}
+                                    type="file"
+                                    accept=".jpg,.jpeg,.png,.gif,.webp,.bmp,.svg"
+                                    multiple
+                                    className="hidden"
+                                    onChange={async (e) => {
+                                        const files = Array.from(e.target.files || []);
+                                        if (files.length === 0) return;
+
+                                        const currentUrls = editImageUrl.split('\n').filter(u => u.trim());
+                                        const remainingSlots = 9 - currentUrls.length;
+
+                                        if (remainingSlots <= 0) {
+                                            alert('最多只能添加9张图片');
+                                            return;
+                                        }
+
+                                        const filesToUpload = files.slice(0, remainingSlots);
+
+                                        setEditIsUploading(true);
+                                        setEditUploadProgress(0);
+                                        try {
+                                            const newUrls: string[] = [];
+                                            for (let i = 0; i < filesToUpload.length; i++) {
+                                                const url = await uploadToOSSSimple(filesToUpload[i]);
+                                                newUrls.push(url);
+                                                setEditUploadProgress(Math.round(((i + 1) / filesToUpload.length) * 100));
+                                            }
+                                            setEditImageUrl([...currentUrls, ...newUrls].join('\n'));
+                                        } catch (err: any) {
+                                            setError(err.message || '上传失败');
+                                        } finally {
+                                            setEditIsUploading(false);
+                                            if (editFileInputRef.current) {
+                                                editFileInputRef.current.value = '';
+                                            }
+                                        }
+                                    }}
+                                />
                             </div>
+
 
                             <div className="mt-4 flex justify-end gap-3">
                                 <button onClick={() => setIsEditModalOpen(false)} className="px-4 py-2 text-sm font-medium text-slate-500">取消</button>
@@ -647,121 +661,87 @@ const MaterialCenter: React.FC<MaterialCenterProps> = ({ projectsList, onPublish
                 </div>
             )}
 
-            {/* Publish Modal */}
-            {isPublishModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div className="w-full max-w-md rounded-xl bg-surface-light dark:bg-surface-dark p-6 shadow-2xl border border-slate-200 dark:border-slate-800 scale-100 animate-in zoom-in-95 duration-200">
-                        <div className="mb-6 flex items-center justify-between">
-                            <h3 className="text-xl font-bold text-slate-900 dark:text-white">执行工作流</h3>
-                            <button onClick={() => setIsPublishModalOpen(false)} className="rounded-full p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">
-                                <span className="material-symbols-outlined">close</span>
-                            </button>
-                        </div>
-                        <div className="flex flex-col gap-4">
-                            <div>
-                                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">发布平台</label>
-                                <select
-                                    className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
-                                    value={publishPlatform}
-                                    onChange={(e) => setPublishPlatform(e.target.value)}
-                                >
-                                    <option value="xhs">小红书 (XHS)</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">笔记标题</label>
-                                <input
-                                    type="text"
-                                    className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
-                                    value={publishTitle}
-                                    onChange={(e) => setPublishTitle(e.target.value)}
-                                    placeholder="输入笔记标题..."
-                                />
-                            </div>
-                            <div>
-                                <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                                    图片 URL {selectedMaterial?.type !== 'image' && <span className="text-red-500">*</span>}
-                                </label>
-                                <input
-                                    type="text"
-                                    className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
-                                    value={publishImageUrl}
-                                    onChange={(e) => setPublishImageUrl(e.target.value)}
-                                    placeholder="https://..."
-                                />
-                                {selectedMaterial?.type !== 'image' && (
-                                    <p className="text-[10px] text-slate-500 mt-1">小红书发布必须包含图片。由于当前素材是文本，请提供一个图片 URL。</p>
-                                )}
-                            </div>
-                            <div className="bg-slate-50 dark:bg-slate-800 p-3 rounded-lg border border-slate-100 dark:border-slate-700">
-                                <p className="text-xs text-slate-500 mb-1 font-bold">发布内容预览:</p>
-                                <p className="text-xs text-slate-700 dark:text-slate-300 line-clamp-4 italic">{selectedMaterial?.content}</p>
-                            </div>
-                            <div className="mt-4 flex justify-end gap-3">
-                                <button onClick={() => setIsPublishModalOpen(false)} className="px-4 py-2 text-sm font-medium text-slate-500">取消</button>
-                                <button onClick={handlePublishClick} className="bg-gradient-primary text-white px-6 py-2 rounded-lg text-sm font-bold shadow-lg">执行工作流</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
-
             {/* View Modal */}
-            {isViewModalOpen && viewingMaterial && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div className="w-full max-w-2xl max-h-[80vh] rounded-xl bg-surface-light dark:bg-surface-dark shadow-2xl border border-slate-200 dark:border-slate-800 scale-100 animate-in zoom-in-95 duration-200 overflow-hidden flex flex-col">
-                        <div className="p-6 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
-                            <h3 className="text-xl font-bold text-slate-900 dark:text-white">素材详情</h3>
-                            <button onClick={() => setIsViewModalOpen(false)} className="rounded-full p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">
-                                <span className="material-symbols-outlined">close</span>
-                            </button>
-                        </div>
-                        <div className="p-6 overflow-y-auto flex-1">
-                            <div className="flex flex-col gap-4">
-                                <div className="flex items-center gap-3">
-                                    <span className="px-2.5 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-xs font-bold">{viewingMaterial.type}</span>
-                                    <span className="text-sm text-slate-500 dark:text-slate-400">创建于 {new Date(viewingMaterial.createdAt).toLocaleString()}</span>
-                                </div>
-
-                                <div>
-                                    <label className="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">名称</label>
-                                    <p className="text-lg font-bold text-slate-900 dark:text-white">{viewingMaterial.name}</p>
-                                </div>
-
-                                {viewingMaterial.projectId && projectMap.has(viewingMaterial.projectId) && (
-                                    <div className="text-xs text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20 px-3 py-2 rounded-lg flex items-center gap-1.5">
-                                        <span className="material-symbols-outlined" style={{ fontSize: "14px" }}>link</span>
-                                        <span>来源项目: {projectMap.get(viewingMaterial.projectId)}</span>
+            {
+                isViewModalOpen && viewingMaterial && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                        <div className="w-full max-w-2xl max-h-[80vh] rounded-xl bg-surface-light dark:bg-surface-dark shadow-2xl border border-slate-200 dark:border-slate-800 scale-100 animate-in zoom-in-95 duration-200 overflow-hidden flex flex-col">
+                            <div className="p-6 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+                                <h3 className="text-xl font-bold text-slate-900 dark:text-white">素材详情</h3>
+                                <button onClick={() => setIsViewModalOpen(false)} className="rounded-full p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">
+                                    <span className="material-symbols-outlined">close</span>
+                                </button>
+                            </div>
+                            <div className="p-6 overflow-y-auto flex-1">
+                                <div className="flex flex-col gap-4">
+                                    <div className="flex items-center gap-3">
+                                        <span className="px-2.5 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-xs font-bold">{viewingMaterial.type}</span>
+                                        <span className="text-sm text-slate-500 dark:text-slate-400">创建于 {new Date(viewingMaterial.createdAt).toLocaleString()}</span>
                                     </div>
-                                )}
 
-                                <div>
-                                    <label className="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">内容</label>
-                                    {viewingMaterial.type === 'image' ? (
-                                        <div className="rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700">
-                                            <img src={viewingMaterial.content} alt={viewingMaterial.name} className="w-full h-auto max-h-96 object-contain bg-slate-50 dark:bg-slate-900" />
+                                    <div>
+                                        <label className="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">名称</label>
+                                        <p className="text-lg font-bold text-slate-900 dark:text-white">{viewingMaterial.name}</p>
+                                    </div>
+
+                                    {viewingMaterial.projectId && projectMap.has(viewingMaterial.projectId) && (
+                                        <div className="text-xs text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20 px-3 py-2 rounded-lg flex items-center gap-1.5">
+                                            <span className="material-symbols-outlined" style={{ fontSize: "14px" }}>link</span>
+                                            <span>来源项目: {projectMap.get(viewingMaterial.projectId)}</span>
                                         </div>
-                                    ) : (
-                                        <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-                                            <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap">{viewingMaterial.content}</p>
+                                    )}
+
+                                    <div>
+                                        <label className="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">内容</label>
+                                        {viewingMaterial.type === 'image' ? (
+                                            <div className="rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700">
+                                                <img src={viewingMaterial.content} alt={viewingMaterial.name} className="w-full h-auto max-h-96 object-contain bg-slate-50 dark:bg-slate-900" />
+                                            </div>
+                                        ) : (
+                                            <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                                                <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap">{viewingMaterial.content}</p>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Image Preview */}
+                                    {(viewingMaterial as any).imageUrls && (viewingMaterial as any).imageUrls.trim() && (
+                                        <div>
+                                            <label className="mb-2 block text-xs font-medium text-slate-500 dark:text-slate-400">图片预览</label>
+                                            <div className="grid grid-cols-3 gap-3">
+                                                {(viewingMaterial as any).imageUrls.split('\n').filter((u: string) => u.trim()).map((url: string, idx: number) => (
+                                                    <div key={idx} className="rounded-lg overflow-hidden">
+                                                        <img src={url} alt={`图片${idx + 1}`} className="w-full h-24 object-contain rounded-lg" />
+                                                    </div>
+                                                ))}
+                                            </div>
                                         </div>
                                     )}
                                 </div>
                             </div>
-                        </div>
-                        <div className="p-6 border-t border-slate-200 dark:border-slate-700 flex justify-end gap-3">
-                            <button onClick={() => setIsViewModalOpen(false)} className="px-6 py-2 text-sm font-medium text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">关闭</button>
-                            <button onClick={() => {
-                                setIsViewModalOpen(false);
-                                openPublishModal(viewingMaterial);
-                            }} className="flex items-center gap-1 bg-gradient-primary text-white px-6 py-2 rounded-lg text-sm font-bold shadow-lg">
-                                <span className="material-symbols-outlined text-[16px]">account_tree</span>工作流
-                            </button>
+                            <div className="p-6 border-t border-slate-200 dark:border-slate-700 flex justify-end gap-3">
+                                <button onClick={() => setIsViewModalOpen(false)} className="px-6 py-2 text-sm font-medium text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">关闭</button>
+                                <button onClick={() => {
+                                    setIsViewModalOpen(false);
+                                    if (onOpenPublishDialog && viewingMaterial.projectId) {
+                                        const project = projectsList.find(p => p.id === viewingMaterial.projectId);
+                                        if (project) {
+                                            onOpenPublishDialog(project, viewingMaterial.id);
+                                        } else {
+                                            alert("未找到关联项目，无法启动。");
+                                        }
+                                    } else if (!viewingMaterial.projectId) {
+                                        alert("该素材未关联项目，请先编辑关联项目。");
+                                    }
+                                }} className="flex items-center gap-1 bg-gradient-primary text-white px-6 py-2 rounded-lg text-sm font-bold shadow-lg">
+                                    <span className="material-symbols-outlined text-[16px]">play_arrow</span>启动
+                                </button>
+                            </div>
                         </div>
                     </div>
-                </div>
-            )}
-        </div>
+                )
+            }
+        </div >
     );
 };
 

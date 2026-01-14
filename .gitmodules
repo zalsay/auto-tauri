@@ -1,3 +1,9 @@
 [submodule "landing-page-vue"]
 	path = landing-page-vue
 	url = git@github.com:zalsay/auto-tauri-home.git
+[submodule "framework"]
+	path = framework
+	url = git@github.com:zalsay/tauri-framework.git
+[submodule "xhs_agent"]
+	path = xhs_agent
+	url = git@github.com:zalsay/xhs-agent.git

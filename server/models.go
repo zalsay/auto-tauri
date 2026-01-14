@@ -7,19 +7,19 @@ import (
 )
 
 type User struct {
-	ID           string    `gorm:"primaryKey;type:uuid" json:"id"`
-	Email        string    `gorm:"uniqueIndex;size:255;not null" json:"email"`
-	PasswordHash string    `gorm:"size:255;not null" json:"-"`
-	Balance      int64     `gorm:"not null;default:0" json:"balance"`
-	
-	// LLM Settings
-	LLMProvider  string    `gorm:"size:64;default:'TaskMaster'" json:"llmProvider"`
-	LLMModel     string    `gorm:"size:64;default:'google/gemini-3-flash-preview'" json:"llmModel"`
-	LLMAPIKey    string    `gorm:"size:255" json:"llmApiKey"`
-	LLMBaseURL   string    `gorm:"size:255" json:"llmBaseUrl"`
+	ID           string `gorm:"primaryKey;type:uuid" json:"id"`
+	Email        string `gorm:"uniqueIndex;size:255;not null" json:"email"`
+	PasswordHash string `gorm:"size:255;not null" json:"-"`
+	Balance      int64  `gorm:"not null;default:0" json:"balance"`
 
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	// LLM Settings
+	LLMProvider string `gorm:"size:64;default:'TaskMaster'" json:"llmProvider"`
+	LLMModel    string `gorm:"size:64;default:'google/gemini-3-flash-preview'" json:"llmModel"`
+	LLMAPIKey   string `gorm:"size:255" json:"llmApiKey"`
+	LLMBaseURL  string `gorm:"size:255" json:"llmBaseUrl"`
+
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 type Transaction struct {
@@ -32,15 +32,17 @@ type Transaction struct {
 }
 
 type Project struct {
-	ID        string    `gorm:"primaryKey;type:uuid" json:"id"`
-	UserID    string    `gorm:"index;type:uuid;not null" json:"userId"`
-	Name      string    `gorm:"size:255;not null" json:"name"`
-	URL       string    `gorm:"type:text" json:"url"`
-	Prompt    string    `gorm:"type:text;not null" json:"prompt"`
-	Type      string    `gorm:"size:32;not null;default:'workflow'" json:"type"`
-	Screenshot bool      `gorm:"not null;default:false" json:"screenshot"`
-	CreatedAt time.Time `gorm:"autoCreateTime" json:"createdAt"`
-	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
+	ID           string    `gorm:"primaryKey;type:uuid" json:"id"`
+	UserID       string    `gorm:"index;type:uuid;not null" json:"userId"`
+	Name         string    `gorm:"size:255;not null" json:"name"`
+	URL          string    `gorm:"type:text" json:"url"`
+	Prompt       string    `gorm:"type:text;not null" json:"prompt"`
+	Type         string    `gorm:"size:32;not null;default:'workflow'" json:"type"`
+	Screenshot   bool      `gorm:"not null;default:false" json:"screenshot"`
+	Platform     string    `gorm:"size:32;default:'xhs'" json:"platform"`
+	UseAIRewrite bool      `gorm:"not null;default:false" json:"useAIRewrite"`
+	CreatedAt    time.Time `gorm:"autoCreateTime" json:"createdAt"`
+	UpdatedAt    time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
 }
 
 type Task struct {
@@ -57,18 +59,14 @@ type Task struct {
 }
 
 type LLMConfig struct {
-
 	Provider string `json:"llmProvider"`
 
-	Model    string `json:"llmModel"`
+	Model string `json:"llmModel"`
 
-	APIKey   string `json:"llmApiKey"`
+	APIKey string `json:"llmApiKey"`
 
-	BaseURL  string `json:"llmBaseUrl"`
-
+	BaseURL string `json:"llmBaseUrl"`
 }
-
-
 
 type Material struct {
 	ID        string    `gorm:"primaryKey;type:uuid" json:"id"`
@@ -76,13 +74,11 @@ type Material struct {
 	ProjectID *string   `gorm:"index;type:uuid" json:"projectId"`
 	Name      string    `gorm:"size:255;not null" json:"name"`
 	Type      string    `gorm:"size:32;not null;default:'text'" json:"type"`
-	ImageUrls  string    `gorm:"type:text" json:"imageUrls"`
+	ImageUrls string    `gorm:"type:text" json:"imageUrls"`
 	Content   string    `gorm:"type:text" json:"content"`
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"createdAt"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
 }
-
-
 
 func AutoMigrate(db *gorm.DB) error {
 

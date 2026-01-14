@@ -11,6 +11,9 @@ import (
 	"strings"
 	"time"
 
+	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
+	sts20150401 "github.com/alibabacloud-go/sts-20150401/v2/client"
+	"github.com/alibabacloud-go/tea/tea"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -52,19 +55,23 @@ type RechargeRequest struct {
 }
 
 type ProjectCreateRequest struct {
-	Name       string `json:"name"`
-	URL        string `json:"url"`
-	Prompt     string `json:"prompt"`
-	Type       string `json:"type"`
-	Screenshot *bool  `json:"screenshot"`
+	Name         string `json:"name"`
+	URL          string `json:"url"`
+	Prompt       string `json:"prompt"`
+	Type         string `json:"type"`
+	Screenshot   *bool  `json:"screenshot"`
+	Platform     string `json:"platform"`
+	UseAIRewrite *bool  `json:"useAIRewrite"`
 }
 
 type ProjectUpdateRequest struct {
-	Name       string `json:"name"`
-	URL        string `json:"url"`
-	Prompt     string `json:"prompt"`
-	Type       string `json:"type"`
-	Screenshot *bool  `json:"screenshot"`
+	Name         string `json:"name"`
+	URL          string `json:"url"`
+	Prompt       string `json:"prompt"`
+	Type         string `json:"type"`
+	Screenshot   *bool  `json:"screenshot"`
+	Platform     string `json:"platform"`
+	UseAIRewrite *bool  `json:"useAIRewrite"`
 }
 
 type TaskStartResponse struct {
@@ -331,15 +338,19 @@ func createProjectHandler(c *gin.Context) {
 		return
 	}
 	project := Project{
-		ID:     uuid.NewString(),
-		UserID: userID,
-		Name:   req.Name,
-		URL:    req.URL,
-		Prompt: req.Prompt,
-		Type:   req.Type,
+		ID:       uuid.NewString(),
+		UserID:   userID,
+		Name:     req.Name,
+		URL:      req.URL,
+		Prompt:   req.Prompt,
+		Type:     req.Type,
+		Platform: req.Platform,
 	}
 	if req.Screenshot != nil {
 		project.Screenshot = *req.Screenshot
+	}
+	if req.UseAIRewrite != nil {
+		project.UseAIRewrite = *req.UseAIRewrite
 	}
 	if err := globalDB.Create(&project).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed_to_create_project"})
@@ -359,13 +370,17 @@ func updateProjectHandler(c *gin.Context) {
 	log.Printf("[updateProjectHandler] Received request for project %s: %+v", id, req)
 
 	updates := map[string]interface{}{
-		"name":   req.Name,
-		"url":    req.URL,
-		"prompt": req.Prompt,
-		"type":   req.Type,
+		"name":     req.Name,
+		"url":      req.URL,
+		"prompt":   req.Prompt,
+		"type":     req.Type,
+		"platform": req.Platform,
 	}
 	if req.Screenshot != nil {
 		updates["screenshot"] = *req.Screenshot
+	}
+	if req.UseAIRewrite != nil {
+		updates["use_ai_rewrite"] = *req.UseAIRewrite
 	}
 
 	if err := globalDB.Model(&Project{}).Where("id = ? AND user_id = ?", id, userID).Updates(updates).Error; err != nil {
@@ -873,34 +888,89 @@ func publishMaterialHandler(c *gin.Context) {
 	})
 }
 
-// getOSSTempTokenHandler returns OSS credentials for frontend direct upload
-// Returns the bucket config and keys from environment variables
+// getOSSTempTokenHandler returns OSS STS temporary credentials for frontend direct upload
+// Uses Alibaba Cloud STS SDK to generate secure temporary tokens
 func getOSSTempTokenHandler(c *gin.Context) {
 	// Get OSS configuration from environment
 	accessKeyID := os.Getenv("OSS_ACCESS_KEY_ID")
 	accessKeySecret := os.Getenv("OSS_ACCESS_KEY_SECRET")
 	bucket := os.Getenv("OSS_BUCKET")
 	region := os.Getenv("OSS_REGION")
+	roleArn := os.Getenv("OSS_ROLE_ARN") // RAM Role ARN for STS
 
-	if accessKeyID == "" || accessKeySecret == "" || bucket == "" || region == "" {
+	if accessKeyID == "" || accessKeySecret == "" || bucket == "" || region == "" || roleArn == "" {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "oss_not_configured",
-			"message": "OSS环境变量未配置",
+			"message": "OSS环境变量未配置 (OSS_ACCESS_KEY_ID, OSS_ACCESS_KEY_SECRET, OSS_BUCKET, OSS_REGION, OSS_ROLE_ARN)",
 		})
 		return
 	}
 
-	// For security, you should use STS SDK to generate temporary tokens
-	// Here we return the config for direct upload (suitable for internal use)
-	expiredTime := time.Now().Add(30 * time.Minute).Unix()
+	// Normalize region to get clean region ID (e.g., "ap-southeast-1")
+	cleanRegion := region
+	cleanRegion = strings.TrimPrefix(cleanRegion, "http://")
+	cleanRegion = strings.TrimPrefix(cleanRegion, "https://")
+	cleanRegion = strings.TrimSuffix(cleanRegion, ".aliyuncs.com")
+	cleanRegion = strings.TrimPrefix(cleanRegion, "oss-")
+
+	// Initialize STS Client
+	config := &openapi.Config{
+		AccessKeyId:     tea.String(accessKeyID),
+		AccessKeySecret: tea.String(accessKeySecret),
+	}
+	config.Endpoint = tea.String("sts.aliyuncs.com")
+
+	stsClient, err := sts20150401.NewClient(config)
+	if err != nil {
+		log.Printf("[getOSSTempTokenHandler] Failed to create STS client: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "sts_client_error",
+			"message": "无法创建STS客户端",
+		})
+		return
+	}
+
+	// Request temporary credentials
+	request := &sts20150401.AssumeRoleRequest{
+		RoleArn:         tea.String(roleArn),
+		RoleSessionName: tea.String("oss_upload_session"),
+		DurationSeconds: tea.Int64(3600), // 1 hour validity
+	}
+
+	response, err := stsClient.AssumeRole(request)
+	if err != nil {
+		log.Printf("[getOSSTempTokenHandler] STS AssumeRole failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "sts_assume_role_error",
+			"message": "获取STS临时凭证失败: " + err.Error(),
+		})
+		return
+	}
+
+	if response.Body == nil || response.Body.Credentials == nil {
+		log.Printf("[getOSSTempTokenHandler] STS response is empty")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "sts_empty_response",
+			"message": "STS返回空响应",
+		})
+		return
+	}
+
+	creds := response.Body.Credentials
+
+	// Construct standard endpoint
+	endpoint := fmt.Sprintf("oss-%s.aliyuncs.com", cleanRegion)
+
+	log.Printf("[getOSSTempTokenHandler] STS credentials obtained successfully, expiration: %s", tea.StringValue(creds.Expiration))
 
 	c.JSON(http.StatusOK, gin.H{
-		"accessKeyId":     accessKeyID,
-		"accessKeySecret": accessKeySecret,
+		"accessKeyId":     tea.StringValue(creds.AccessKeyId),
+		"accessKeySecret": tea.StringValue(creds.AccessKeySecret),
+		"stsToken":        tea.StringValue(creds.SecurityToken), // Frontend expects 'stsToken'
+		"expiration":      tea.StringValue(creds.Expiration),
 		"bucket":          bucket,
-		"region":          region,
-		"endpoint":        fmt.Sprintf("https://oss-%s.aliyuncs.com", region),
-		"expiredTime":     expiredTime,
+		"region":          "oss-" + cleanRegion,
+		"endpoint":        endpoint,
 	})
 }
 

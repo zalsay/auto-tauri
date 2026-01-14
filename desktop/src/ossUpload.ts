@@ -12,17 +12,18 @@ import OSS from 'ali-oss';
 export interface OSSTempToken {
     accessKeyId: string;
     accessKeySecret: string;
+    stsToken: string; // STS Security Token
     bucket: string;
     region: string;
     endpoint: string;
-    expiredTime: number;
+    expiration: string; // ISO date string
 }
 
 let ossClient: OSS | null = null;
 let tokenExpireTime = 0;
 
 /**
- * 获取 OSS 临时凭证
+ * 获取 OSS STS 临时凭证
  */
 export async function getOSSTempToken(): Promise<OSSTempToken> {
     const token = getStoredToken();
@@ -34,34 +35,97 @@ export async function getOSSTempToken(): Promise<OSSTempToken> {
 }
 
 /**
- * 获取或创建 OSS Client
+ * 清洗并标准化 endpoint
+ */
+function normalizeEndpoint(endpoint: string): string {
+    let finalEndpoint = endpoint;
+
+    // 移除协议头
+    finalEndpoint = finalEndpoint.replace(/^https?:\/\//, '');
+
+    // 移除所有 oss- 前缀
+    while (finalEndpoint.startsWith('oss-')) {
+        finalEndpoint = finalEndpoint.substring(4);
+    }
+
+    // 移除所有 .aliyuncs.com 后缀
+    while (finalEndpoint.endsWith('.aliyuncs.com')) {
+        finalEndpoint = finalEndpoint.substring(0, finalEndpoint.length - 13);
+    }
+
+    // 重建标准 Endpoint
+    return `oss-${finalEndpoint}.aliyuncs.com`;
+}
+
+/**
+ * 获取或创建 OSS Client (使用 STS 临时凭证)
  */
 async function getOSSClient(): Promise<OSS> {
     const now = Date.now();
 
     // 如果 client 存在且未过期，直接返回
     if (ossClient && tokenExpireTime > now + 60000) {
+        console.log('[OSS] Reusing existing client, expires in:', Math.round((tokenExpireTime - now) / 1000), 'seconds');
         return ossClient;
     }
 
-    // 获取新的凭证
-    const tokenData = await getOSSTempToken();
+    console.log('[OSS] Fetching new STS credentials...');
 
-    console.log('[OSS] Creating client with config:', {
-        region: tokenData.region,
-        endpoint: tokenData.endpoint,
-        bucket: tokenData.bucket,
-    });
+    // 获取新的 STS 凭证
+    let tokenData: OSSTempToken;
+    try {
+        tokenData = await getOSSTempToken();
+        console.log('[OSS] Received token data:', {
+            hasAccessKeyId: !!tokenData.accessKeyId,
+            hasAccessKeySecret: !!tokenData.accessKeySecret,
+            hasStsToken: !!tokenData.stsToken,
+            bucket: tokenData.bucket,
+            region: tokenData.region,
+            endpoint: tokenData.endpoint,
+            expiration: tokenData.expiration,
+        });
+    } catch (err) {
+        console.error('[OSS] Failed to get STS token:', err);
+        throw new Error('获取OSS凭证失败: ' + (err instanceof Error ? err.message : String(err)));
+    }
 
-    // 创建新的 OSS client - 使用 endpoint 而不是 region
-    ossClient = new OSS({
-        endpoint: tokenData.endpoint,
+    // 检查必要字段
+    if (!tokenData.accessKeyId || !tokenData.accessKeySecret) {
+        throw new Error('OSS凭证不完整，请检查后端STS配置');
+    }
+
+    const cleanEndpoint = normalizeEndpoint(tokenData.endpoint || tokenData.region);
+    const expirationTime = tokenData.expiration ? new Date(tokenData.expiration).getTime() : (now + 3600000);
+
+    // 创建新的 OSS client (使用 STS 临时凭证)
+    const clientConfig: any = {
+        endpoint: cleanEndpoint,
         accessKeyId: tokenData.accessKeyId,
         accessKeySecret: tokenData.accessKeySecret,
         bucket: tokenData.bucket,
-    });
+        secure: true, // 强制使用 HTTPS
+    };
 
-    tokenExpireTime = tokenData.expiredTime * 1000;
+    // 只有在有 stsToken 时才添加 STS 相关配置
+    if (tokenData.stsToken) {
+        clientConfig.stsToken = tokenData.stsToken;
+        clientConfig.refreshSTSToken = async () => {
+            console.log('[OSS] Refreshing STS token...');
+            const newCreds = await getOSSTempToken();
+            return {
+                accessKeyId: newCreds.accessKeyId,
+                accessKeySecret: newCreds.accessKeySecret,
+                stsToken: newCreds.stsToken,
+            };
+        };
+        clientConfig.refreshSTSTokenInterval = 300000;
+    } else {
+        console.warn('[OSS] No STS token provided, using direct credentials (less secure)');
+    }
+
+    ossClient = new OSS(clientConfig);
+
+    tokenExpireTime = expirationTime;
 
     return ossClient;
 }

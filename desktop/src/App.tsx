@@ -6,7 +6,7 @@ import AgentStudio from "./pages/AgentStudio";
 
 type View = "login" | "register" | "main";
 type DashView = "dashboard" | "projects" | "tasks" | "teams" | "settings" | "materials" | "task_detail" | "agent_studio";
-type TaskStatus = "pending" | "running" | "completed" | "failed";
+type TaskStatus = "pending" | "running" | "completed" | "failed" | "ai_rewriting";
 
 interface User {
     id: string;
@@ -290,9 +290,10 @@ function App() {
     const [activeTaskId, setActiveTaskId] = useState<string>("");
     const [activeProject, setActiveProject] = useState<Project | null>(null);
     const [taskStatus, setTaskStatus] = useState<TaskStatus>("pending");
-    const [taskLogs, setTaskLogs] = useState<string[]>([])
+    const [taskLogs, setTaskLogs] = useState<string[]>([]);
     const logsEndRef = useRef<HTMLDivElement>(null);
     const [lastResultData, setLastResultData] = useState<string>("");
+    const [executionCost, setExecutionCost] = useState(0);
 
     // AI Workflow Dialog State
     const [isAIWorkflowDialogOpen, setIsAIWorkflowDialogOpen] = useState(false);
@@ -846,12 +847,20 @@ function App() {
         }
     }
 
-    async function handlePublishMaterial(material: any, platform: string, title: string, imageUrl: string) {
+    async function handlePublishMaterial(material: any, platform: string, title: string, imageUrl?: string, llmCost: number = 0) {
         if (!token || !user) return;
         setLoading(true);
         setTaskLogs([]);
         setTaskStatus("pending");
         setLastResultData("");
+        setExecutionCost(llmCost);
+
+        if (llmCost > 0) {
+            setTaskLogs([`[System] AI 改写已消耗余额: ${llmCost} 点`]);
+        }
+
+        // I will also append it to a "task context" or similar if available.
+        // Let's just use the logs for now, and I'll add the rich UI display in the next step by adding state.
 
         try {
             // 1. Determine image path (could be local path or URL)
@@ -871,18 +880,23 @@ function App() {
 
             // Validate that we have an image path
             if (!localImagePath) {
+                console.warn('[handlePublishMaterial] No localImagePath found');
                 showAlert("发布失败", "该素材没有关联图片，小红书发布需要至少一张图片。");
                 setLoading(false);
                 return;
             }
+
+
             console.log('[handlePublishMaterial] Using imagePath:', localImagePath);
 
             // 2. Start publish task on backend
+            console.log('[handlePublishMaterial] calling backend to create task...');
             const data = await apiRequest(`/api/v1/materials/${material.id}/publish`, {
                 method: "POST",
                 body: JSON.stringify({ platform, title }),
                 headers: { Authorization: "Bearer " + token },
             }) as { taskId: string; material: any; platform: string; title: string; message: string };
+            console.log('[handlePublishMaterial] task created:', data.taskId);
 
             // Refresh balance
             loadMe(token);
@@ -902,6 +916,7 @@ function App() {
             setTaskLogs(logs => [...logs, `[System] 启动发布任务: ${material.name}`, `[System] 平台: ${platform}`, `[System] 任务 ID: ${data.taskId}`]);
 
             // 4. Spawn XHS-AGENT Sidecar
+            console.log('[handlePublishMaterial] Spawning sidecar: binaries/xhs-agent');
             const command = Command.sidecar("binaries/xhs-agent");
 
             let finalStructuredResult = "";
@@ -926,6 +941,7 @@ function App() {
             });
 
             command.on('error', err => {
+                console.error('[handlePublishMaterial] sidecar command error:', err);
                 setTaskLogs(logs => [...logs, `[System] 错误: ${err}`]);
                 setTaskStatus("failed");
                 setLoading(false);
@@ -969,6 +985,7 @@ function App() {
             });
 
             const child = await command.spawn();
+            console.log('[handlePublishMaterial] sidecar spawned.');
 
             // Payload for xhs-agent
             const payload = {
@@ -979,20 +996,29 @@ function App() {
             };
 
             await child.write(JSON.stringify(payload) + "\n");
+            console.log('[handlePublishMaterial] payload written.');
             setTaskLogs(logs => [...logs, `[System] 指令已下发，正在启动小红书发布代理...`]);
 
         } catch (e: any) {
-            showAlert("发布启动失败", e.message || "无法连接到执行引擎。");
+            console.error('[handlePublishMaterial] Fatal error:', e);
+            let errorMessage = e.message || "无法连接到执行引擎。";
+            if (e.data && e.data.error) {
+                errorMessage = `API错误: ${e.data.error}`;
+                if (e.data.details) errorMessage += ` (${e.data.details})`;
+            } else if (e.status) {
+                errorMessage = `请求失败 (Status: ${e.status})`;
+            }
+            showAlert("发布启动失败", errorMessage);
             setLoading(false);
         }
     }
 
     // ============ Publish Dialog Handlers ============
-    async function handleOpenPublishDialog(project: Project) {
+    async function handleOpenPublishDialog(project: Project, preSelectedMaterialId?: string) {
         setPublishDialogProject(project);
         setIsPublishDialogOpen(true);
         setPublishMode('select');
-        setSelectedMaterialIds([]);
+        setSelectedMaterialIds(preSelectedMaterialId ? [preSelectedMaterialId] : []);
         setRandomPublishCount(1);
         setPublishMaterials([]);
 
@@ -1005,6 +1031,41 @@ function App() {
         } catch (e) {
             setPublishMaterials([]);
         }
+    }
+
+    // AI Rewrite helper function - calls backend LLM endpoint
+    async function rewriteContentWithLLM(content: string, prompt: string): Promise<{ content: string; cost: number }> {
+        if (!token) throw new Error('未登录');
+
+        const response = await apiRequest("/api/v1/llm/chat", {
+            method: "POST",
+            headers: { Authorization: "Bearer " + token },
+            body: JSON.stringify({
+                messages: [
+                    {
+                        role: 'system',
+                        content: `你是一个专业的内容改写助手。请根据用户的要求改写以下内容。要求：${prompt || '保持原意，优化表达，使内容更加自然流畅。'}`
+                    },
+                    {
+                        role: 'user',
+                        content: content
+                    }
+                ],
+                temperature: 0.7,
+                max_tokens: 2000,
+            }),
+        }) as { content: string; cost: number; totalTokens: number };
+
+        if (!response.content) {
+            throw new Error('LLM 返回内容为空');
+        }
+
+        console.log(`[AI Rewrite] Tokens: ${response.totalTokens}, Cost: ${response.cost}`);
+
+        // Refresh balance after LLM usage
+        loadMe(token);
+
+        return { content: response.content, cost: response.cost };
     }
 
     async function handlePublishWithMaterial() {
@@ -1028,13 +1089,57 @@ function App() {
         setPublishLoading(true);
         setIsPublishDialogOpen(false);
 
+        const useAIRewrite = (publishDialogProject as any).useAIRewrite;
+        const projectPrompt = publishDialogProject.prompt || '';
+
+        console.log('[handlePublishWithMaterial] Starting publish loop. Count:', materialsToPublish.length, 'UseAIRewrite:', useAIRewrite);
+
         // Publish each material sequentially  
         for (const material of materialsToPublish) {
-            await handlePublishMaterial(material, 'xiaohongshu', material.name, material.imageUrls);
+            let contentToPublish = material.content;
+            let llmCost = 0;
+
+            // If AI rewrite is enabled, rewrite the content first
+            if (useAIRewrite) {
+                try {
+                    console.log('[handlePublishWithMaterial] Rewriting material:', material.name);
+
+                    // Switch to task detail view immediately to show status
+                    if ((publishDialogProject as Project).id) {
+                        setActiveProject(publishDialogProject as Project);
+                    }
+                    setActiveTaskId(`AI-REWRITE-${Date.now().toString().slice(-6)}`);
+                    setDashView('task_detail');
+                    setTaskStatus('ai_rewriting');
+
+                    const rewriteResult = await rewriteContentWithLLM(material.content, projectPrompt);
+                    contentToPublish = rewriteResult.content;
+                    llmCost = rewriteResult.cost;
+                    console.log('[handlePublishWithMaterial] Rewrite success for:', material.name, 'Cost:', llmCost);
+                } catch (err: any) {
+                    console.error('[handlePublishWithMaterial] Rewrite failed:', err);
+                    setTaskStatus('failed');
+                    setLastResultData(JSON.stringify({ status: 'failed', data: { message: `AI 改写失败: ${err.message}` } }));
+                    continue; // Skip this material
+                }
+            }
+
+            // Create a modified material object with rewritten content
+            const materialToPublish = { ...material, content: contentToPublish };
+            console.log('[handlePublishWithMaterial] Calling handlePublishMaterial for:', material.name);
+
+            try {
+                await handlePublishMaterial(materialToPublish, 'xiaohongshu', material.name, material.imageUrls, llmCost);
+            } catch (err: any) {
+                console.error('[handlePublishWithMaterial] handlePublishMaterial failed:', err);
+                showAlert("发布启动失败", `素材「${material.name}」启动失败: ${err.message}`);
+                // Don't continue, let the user know? Or continue?
+                // If we continue, we might spam alerts.
+            }
         }
 
         setPublishLoading(false);
-        showAlert("发布任务已启动", `已启动 ${materialsToPublish.length} 个素材的发布任务`);
+        // showAlert("发布任务已启动", `已启动 ${materialsToPublish.length} 个素材的发布任务`);
     }
 
     // ============ AI Workflow Dialog Handlers ============
@@ -1547,17 +1652,10 @@ function App() {
                                 <div className="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 flex flex-col">
                                     <div className="flex items-center justify-between mb-4">
                                         <h3 className="text-lg font-bold flex items-center gap-2"><span className="material-symbols-outlined text-orange-500">pending_actions</span>执行状态</h3>
-                                        {taskStatus !== 'running' && activeProject && (
-                                            <button
-                                                onClick={() => handleExecuteProject(activeProject)}
-                                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-blue/10 text-accent-blue hover:bg-accent-blue/20 transition-colors text-xs font-medium"
-                                            >
-                                                <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>play_arrow</span>
-                                                再次执行
-                                            </button>
-                                        )}
                                     </div>
                                     <div className="flex-1 flex items-center justify-center flex-col gap-3">
+                                        {taskStatus === 'pending' && <><div className="size-12 rounded-full border-4 border-slate-200 border-t-slate-400 animate-spin"></div><p className="text-slate-500">任务准备中...</p></>}
+                                        {taskStatus === 'ai_rewriting' && <><div className="size-12 rounded-full border-4 border-slate-200 border-t-purple-500 animate-spin"></div><p className="text-purple-600 font-bold">正在进行 AI 改写...</p></>}
                                         {taskStatus === 'running' && <><div className="size-12 rounded-full border-4 border-slate-200 border-t-accent-blue animate-spin"></div><p className="text-slate-500">任务正在执行中...</p></>}
                                         {taskStatus === 'completed' && <><div className="size-12 rounded-full bg-green-100 dark:bg-green-900/30 text-green-600 flex items-center justify-center"><span className="material-symbols-outlined" style={{ fontSize: "32px" }}>check</span></div><p className="text-green-600 font-bold">任务执行完成</p></>}
                                         {taskStatus === 'failed' && <><div className="size-12 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 flex items-center justify-center"><span className="material-symbols-outlined" style={{ fontSize: "32px" }}>error</span></div><p className="text-red-600 font-bold">任务执行失败</p></>}
@@ -1571,13 +1669,48 @@ function App() {
                                         <span className="material-symbols-outlined text-emerald-500">verified_user</span>
                                         执行结果
                                     </h3>
-                                    <HyperAgentResultDisplay data={(() => {
-                                        try {
-                                            return JSON.parse(lastResultData);
-                                        } catch (e) {
-                                            return { output: lastResultData };
-                                        }
-                                    })()} />
+                                    <div className="rounded-lg font-mono text-sm overflow-x-auto">
+                                        {(() => {
+                                            try {
+                                                const parsed = JSON.parse(lastResultData);
+                                                // Check for XHS Agent specific format
+                                                if (parsed && (parsed.status === 'success' || parsed.status === 'failed') && parsed.data) {
+                                                    const isSuccess = parsed.status === 'success';
+                                                    return (
+                                                        <div className={`flex flex-col gap-3 p-4 rounded-lg border ${isSuccess ? 'bg-green-50 border-green-200 dark:bg-green-900/10 dark:border-green-800' : 'bg-red-50 border-red-200 dark:bg-red-900/10 dark:border-red-800'}`}>
+                                                            <div className="flex items-center gap-2">
+                                                                <span className={`material-symbols-outlined ${isSuccess ? 'text-green-600' : 'text-red-500'}`} style={{ fontSize: "28px" }}>
+                                                                    {isSuccess ? 'check_circle' : 'cancel'}
+                                                                </span>
+                                                                <h4 className={`text-lg font-bold ${isSuccess ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'}`}>
+                                                                    {isSuccess ? '执行成功' : '执行失败'}
+                                                                </h4>
+                                                            </div>
+                                                            <div className="pl-9">
+                                                                <p className={`text-sm ${isSuccess ? 'text-green-800 dark:text-green-300' : 'text-red-800 dark:text-red-300'}`}>
+                                                                    {parsed.data.message || (isSuccess ? '任务已完成' : '任务遇到错误')}
+                                                                </p>
+                                                                {executionCost > 0 && (
+                                                                    <div className="mt-2 text-xs font-mono bg-white/50 dark:bg-black/20 p-1.5 rounded inline-block text-slate-600 dark:text-slate-400">
+                                                                        余额扣减: -{executionCost} 点
+                                                                    </div>
+                                                                )}
+                                                                {parsed.data.details && (
+                                                                    <p className="mt-2 text-xs text-slate-500 font-mono bg-white/50 dark:bg-black/20 p-2 rounded">
+                                                                        {parsed.data.details}
+                                                                    </p>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                }
+                                                // Fallback to default HyperAgent display or JSON dump
+                                                return <HyperAgentResultDisplay data={parsed} />;
+                                            } catch (e) {
+                                                return <HyperAgentResultDisplay data={{ output: lastResultData }} />;
+                                            }
+                                        })()}
+                                    </div>
                                 </div>
                             )}
                             <div className="flex-1 rounded-xl bg-[#1e1e1e] shadow-sm border border-slate-800 flex flex-col overflow-hidden min-h-[300px]">
@@ -1758,7 +1891,7 @@ function App() {
                         </div>
                     )}
                     {dashView === 'materials' && (
-                        <MaterialCenter projectsList={projectsList} onPublish={handlePublishMaterial} />
+                        <MaterialCenter projectsList={projectsList} onOpenPublishDialog={handleOpenPublishDialog} />
                     )}
                     {dashView === 'agent_studio' && (
                         <AgentStudio />
@@ -1798,11 +1931,7 @@ function App() {
                 <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
                     <div className="w-full max-sm:max-w-xs max-w-sm rounded-2xl bg-surface-light dark:bg-surface-dark p-6 shadow-2xl border border-slate-200 dark:border-slate-800 scale-100 animate-in zoom-in-95 duration-200">
                         <div className="flex flex-col items-center text-center gap-4">
-                            <div className={`size-12 rounded-full flex items-center justify-center ${globalModal.type === 'confirm' ? 'bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400' : 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'}`}>
-                                <span className="material-symbols-outlined" style={{ fontSize: "28px" }}>
-                                    {globalModal.type === 'confirm' ? 'help' : 'info'}
-                                </span>
-                            </div>
+                            <img src="/logo-v2-1.png" alt="Logo" className="w-16 h-16 object-contain mb-2" />
                             <div>
                                 <h3 className="text-lg font-bold text-slate-900 dark:text-white">{globalModal.title}</h3>
                                 <p className="mt-2 text-sm text-slate-500 dark:text-slate-400 leading-relaxed">{globalModal.message}</p>
@@ -1818,7 +1947,7 @@ function App() {
                                 )}
                                 <button
                                     onClick={globalModal.type === 'confirm' ? globalModal.onConfirm : closeModal}
-                                    className={`flex-1 px-4 py-2.5 rounded-xl text-white text-sm font-bold shadow-lg transition-all active:scale-95 ${globalModal.type === 'confirm' ? globalModal.confirmColor : 'bg-blue-600'}`}
+                                    className="flex-1 px-4 py-2.5 rounded-xl text-white text-sm font-bold shadow-lg transition-all active:scale-95 bg-gradient-primary hover:opacity-90"
                                 >
                                     {globalModal.type === 'confirm' ? globalModal.confirmText : "好的"}
                                 </button>
@@ -1843,6 +1972,27 @@ function App() {
                         <div className="mb-4 p-3 bg-slate-50 dark:bg-slate-800 rounded-lg">
                             <p className="text-sm font-medium text-slate-900 dark:text-white">{publishDialogProject.name}</p>
                             <p className="text-xs text-slate-500">关联素材: {publishMaterials.length} 个</p>
+                        </div>
+
+                        {/* AI Rewrite Status */}
+                        <div className={`mb-4 p-3 rounded-lg flex items-center gap-2 ${(publishDialogProject as any).useAIRewrite ? 'bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800' : 'bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700'}`}>
+                            <span className={`material-symbols-outlined ${(publishDialogProject as any).useAIRewrite ? 'text-purple-600' : 'text-slate-400'}`} style={{ fontSize: '18px' }}>
+                                {(publishDialogProject as any).useAIRewrite ? 'auto_awesome' : 'edit_off'}
+                            </span>
+                            <div>
+                                <p className={`text-sm font-medium ${(publishDialogProject as any).useAIRewrite ? 'text-purple-700 dark:text-purple-400' : 'text-slate-600 dark:text-slate-400'}`}>
+                                    {(publishDialogProject as any).useAIRewrite ? 'AI 改写已启用' : 'AI 改写未启用'}
+                                </p>
+                                <p className="text-xs text-slate-500">
+                                    {(publishDialogProject as any).useAIRewrite ? '发布前将使用 AI 改写素材内容' : '将直接使用原始素材内容发布'}
+                                </p>
+                                {(publishDialogProject as any).useAIRewrite && (publishDialogProject as any).prompt && (
+                                    <div className="mt-2 text-xs bg-white dark:bg-slate-900/50 p-2 rounded border border-purple-100 dark:border-purple-800/50 text-slate-600 dark:text-slate-400">
+                                        <span className="font-bold text-purple-600 dark:text-purple-400 block mb-0.5">Prompt:</span>
+                                        {(publishDialogProject as any).prompt}
+                                    </div>
+                                )}
+                            </div>
                         </div>
 
                         {/* Mode selection */}
@@ -1918,9 +2068,7 @@ function App() {
                         {/* Header */}
                         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800">
                             <div className="flex items-center gap-3">
-                                <div className="size-10 rounded-full bg-gradient-to-r from-purple-600 to-pink-600 flex items-center justify-center text-white">
-                                    <span className="material-symbols-outlined" style={{ fontSize: "20px" }}>auto_awesome</span>
-                                </div>
+                                <img src="/logo-v2-1.png" alt="Logo" className="w-10 h-10 object-contain" />
                                 <div>
                                     <h3 className="text-lg font-bold text-slate-900 dark:text-white">AI 工作流生成</h3>
                                     <p className="text-xs text-slate-500">{aiWorkflowProject?.name}</p>
@@ -1931,7 +2079,7 @@ function App() {
                                     <button
                                         onClick={handleExecuteWorkflow}
                                         disabled={aiWorkflowExecuting}
-                                        className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-green-700 transition-colors disabled:opacity-50 shadow-sm"
+                                        className="flex items-center gap-2 bg-gradient-primary text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg transition-all hover:opacity-90 disabled:opacity-50"
                                     >
                                         <span className="material-symbols-outlined" style={{ fontSize: "18px" }}>{aiWorkflowExecuting ? 'sync' : 'play_arrow'}</span>
                                         执行工作流
