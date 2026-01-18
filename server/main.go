@@ -45,6 +45,7 @@ func main() {
 		// Protected Routes
 		auth := api.Group("/")
 		auth.Use(authMiddleware())
+		auth.Use(blacklistMiddleware()) // Check if user is blacklisted
 		{
 			auth.GET("/auth/me", meHandler)
 			auth.GET("/llm-config", getLLMConfigHandler)
@@ -79,6 +80,37 @@ func main() {
 
 			// LLM
 			auth.POST("/llm/chat", llmChatHandler)
+
+			// Organizations (for org_admin and super_admin)
+			orgs := auth.Group("/organizations")
+			{
+				orgs.POST("", createOrganizationHandler)
+				orgs.GET("", getOrganizationsHandler)
+				orgs.GET("/:id", getOrganizationHandler)
+				orgs.PUT("/:id", updateOrganizationHandler)
+				orgs.DELETE("/:id", deleteOrganizationHandler)
+				orgs.POST("/:id/recharge", rechargeOrganizationHandler)
+
+				// Organization Members
+				orgs.GET("/:id/members", getOrgMembersHandler)
+				orgs.POST("/:id/members", addOrgMemberHandler)
+				orgs.DELETE("/:id/members/:userId", removeOrgMemberHandler)
+
+				// Billing Admin
+				orgs.PUT("/:id/billing-admin", setBillingAdminHandler)
+
+				// Organization Blacklist
+				orgs.GET("/:id/blacklist", getOrgBlacklistHandler)
+				orgs.POST("/:id/blacklist", addToOrgBlacklistHandler)
+				orgs.DELETE("/:id/blacklist/:userId", removeFromOrgBlacklistHandler)
+			}
+
+			// Admin Routes (for super_admin only)
+			admin := auth.Group("/admin")
+			admin.Use(requireRole("super_admin"))
+			{
+				admin.PATCH("/users/:id/blacklist", setSystemBlacklistHandler)
+			}
 
 		}
 	}

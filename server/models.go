@@ -12,6 +12,11 @@ type User struct {
 	PasswordHash string `gorm:"size:255;not null" json:"-"`
 	Balance      int64  `gorm:"not null;default:0" json:"balance"`
 
+	// Organization fields
+	OrganizationID *string `gorm:"index;type:uuid" json:"organizationId"`
+	Role           string  `gorm:"size:32;not null;default:'user'" json:"role"` // user, org_admin, super_admin
+	IsBlacklisted  bool    `gorm:"not null;default:false" json:"isBlacklisted"` // System blacklist
+
 	// LLM Settings
 	LLMProvider string `gorm:"size:64;default:'TaskMaster'" json:"llmProvider"`
 	LLMModel    string `gorm:"size:64;default:'google/gemini-3-flash-preview'" json:"llmModel"`
@@ -20,6 +25,24 @@ type User struct {
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type Organization struct {
+	ID             string    `gorm:"primaryKey;type:uuid" json:"id"`
+	Name           string    `gorm:"size:255;not null" json:"name"`
+	Balance        int64     `gorm:"not null;default:0" json:"balance"`
+	BillingAdminID *string   `gorm:"type:uuid" json:"billingAdminId"` // Admin account for billing
+	CreatedAt      time.Time `gorm:"autoCreateTime" json:"createdAt"`
+	UpdatedAt      time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
+}
+
+type OrgUserBlacklist struct {
+	ID             string    `gorm:"primaryKey;type:uuid" json:"id"`
+	OrganizationID string    `gorm:"index;type:uuid;not null" json:"organizationId"`
+	UserID         string    `gorm:"index;type:uuid;not null" json:"userId"`
+	BlockedBy      string    `gorm:"type:uuid;not null" json:"blockedBy"`
+	Reason         string    `gorm:"size:512" json:"reason"`
+	CreatedAt      time.Time `gorm:"autoCreateTime" json:"createdAt"`
 }
 
 type Transaction struct {
@@ -81,7 +104,5 @@ type Material struct {
 }
 
 func AutoMigrate(db *gorm.DB) error {
-
-	return db.AutoMigrate(&User{}, &Transaction{}, &Project{}, &Task{}, &Material{})
-
+	return db.AutoMigrate(&Organization{}, &User{}, &Transaction{}, &Project{}, &Task{}, &Material{}, &OrgUserBlacklist{})
 }

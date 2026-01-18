@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:18.1
+    container_name: opencode-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: opencode
+      POSTGRES_PASSWORD: opencode_secret
+      POSTGRES_DB: opencode
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opencode"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - opencode-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: opencode-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - opencode-network
+
+  opencode-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: opencode-server
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      SERVER_PORT: "3000"
+      DATABASE_HOST: "postgres"
+      DATABASE_PORT: "5432"
+      DATABASE_USERNAME: "opencode"
+      DATABASE_PASSWORD: "opencode_secret"
+      DATABASE_NAME: "opencode"
+      DATABASE_SSLMODE: "disable"
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+      OSS_ENDPOINT: "${OSS_ENDPOINT}"
+      OSS_ACCESS_KEY_ID: "${OSS_ACCESS_KEY_ID}"
+      OSS_ACCESS_KEY_SECRET: "${OSS_ACCESS_KEY_SECRET}"
+      OSS_BUCKET: "${OSS_BUCKET:-opencode-files}"
+      OSS_REGION: "${OSS_REGION:-cn-hangzhou}"
+      AUTH_JWT_SECRET: "${JWT_SECRET:-your-jwt-secret-key}"
+      LOGGING_LEVEL: "info"
+      LOGGING_FORMAT: "json"
+    volumes:
+      - ./configs:/app/configs
+      - ./skills:/app/skills
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - opencode-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  opencode-network:
+    driver: bridge

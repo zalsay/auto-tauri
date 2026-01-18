@@ -12,10 +12,40 @@ interface User {
     id: string;
     email: string;
     balance: number;
+    organizationId?: string;
+    role: string;
+    isBlacklisted: boolean;
     llmProvider: string;
     llmModel: string;
     llmApiKey: string;
     llmBaseUrl: string;
+}
+
+interface Organization {
+    id: string;
+    name: string;
+    balance: number;
+    billingAdminId?: string;
+    createdAt: string;
+    updatedAt: string;
+}
+
+interface OrgMember {
+    id: string;
+    email: string;
+    organizationId?: string;
+    role: string;
+    balance: number;
+    isBlacklisted: boolean;
+}
+
+interface OrgBlacklistEntry {
+    id: string;
+    organizationId: string;
+    userId: string;
+    blockedBy: string;
+    reason: string;
+    createdAt: string;
 }
 
 interface Project {
@@ -44,6 +74,9 @@ interface AuthResponseUser {
     id: string;
     email: string;
     balance: number;
+    organizationId?: string;
+    role: string;
+    isBlacklisted: boolean;
     llmProvider: string;
     llmModel: string;
     llmApiKey: string;
@@ -273,6 +306,16 @@ function App() {
     const [projectsList, setProjectsList] = useState<Project[]>([]);
     const [tasksList, setTasksList] = useState<Task[]>([]);
 
+    // Organization State
+    const [, setOrganizations] = useState<Organization[]>([]);
+    const [currentOrg, setCurrentOrg] = useState<Organization | null>(null);
+    const [orgMembers, setOrgMembers] = useState<OrgMember[]>([]);
+    const [orgBlacklist, setOrgBlacklist] = useState<OrgBlacklistEntry[]>([]);
+    const [isOrgModalOpen, setIsOrgModalOpen] = useState(false);
+    const [newOrgName, setNewOrgName] = useState("");
+    const [inviteEmail, setInviteEmail] = useState("");
+    const [orgLoading, setOrgLoading] = useState(false);
+
     // UI State
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
     const [globalModal, setGlobalModal] = useState<GlobalModalConfig>({
@@ -337,6 +380,7 @@ function App() {
         if (token) {
             if (dashView === 'projects' || dashView === 'dashboard') loadProjects();
             if (dashView === 'tasks') loadTasks();
+            if (dashView === 'teams') loadOrganizations();
             if (dashView === 'settings') {
                 if (user) {
                     setLlmProvider(user.llmProvider || "TaskMaster");
@@ -380,6 +424,152 @@ function App() {
         }
     }
 
+    // Organization API Functions
+    async function loadOrganizations() {
+        setOrgLoading(true);
+        try {
+            const data = await apiRequest("/api/v1/organizations", {
+                headers: { Authorization: "Bearer " + token },
+            });
+            setOrganizations(data as Organization[]);
+            // If user belongs to an org, load that org's details
+            if (user?.organizationId) {
+                const org = (data as Organization[]).find(o => o.id === user.organizationId);
+                if (org) {
+                    setCurrentOrg(org);
+                    await loadOrgMembers(org.id);
+                    await loadOrgBlacklist(org.id);
+                }
+            }
+        } catch (e) { } finally {
+            setOrgLoading(false);
+        }
+    }
+
+    async function loadOrgMembers(orgId: string) {
+        try {
+            const data = await apiRequest(`/api/v1/organizations/${orgId}/members`, {
+                headers: { Authorization: "Bearer " + token },
+            });
+            setOrgMembers(data as OrgMember[]);
+        } catch (e) { }
+    }
+
+    async function loadOrgBlacklist(orgId: string) {
+        try {
+            const data = await apiRequest(`/api/v1/organizations/${orgId}/blacklist`, {
+                headers: { Authorization: "Bearer " + token },
+            });
+            setOrgBlacklist(data as OrgBlacklistEntry[]);
+        } catch (e) { }
+    }
+
+    async function handleCreateOrg(e: React.FormEvent) {
+        e.preventDefault();
+        if (!newOrgName.trim()) return;
+        setOrgLoading(true);
+        try {
+            const org = await apiRequest("/api/v1/organizations", {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token },
+                body: JSON.stringify({ name: newOrgName }),
+            }) as Organization;
+            // Join the created org as admin
+            await apiRequest(`/api/v1/organizations/${org.id}/members`, {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token },
+                body: JSON.stringify({ userId: user?.id, role: "org_admin" }),
+            });
+            setNewOrgName("");
+            setIsOrgModalOpen(false);
+            showAlert("创建成功", "组织创建成功，您已成为管理员。");
+            await loadMe(token); // Refresh user to get new org assignment
+            await loadOrganizations();
+        } catch (e) {
+            showAlert("创建失败", "无法创建组织。");
+        } finally {
+            setOrgLoading(false);
+        }
+    }
+
+    async function handleAddMember(_email: string, _role: string = "user") {
+        if (!currentOrg || !inviteEmail.trim()) return;
+        setOrgLoading(true);
+        try {
+            // Note: In a real app, you'd look up user by email first
+            // For now, we'll show a message about needing user ID
+            showAlert("功能提示", "请让成员先注册账号，然后提供其用户ID以添加到组织。");
+        } catch (e) {
+            showAlert("添加失败", "无法添加成员。");
+        } finally {
+            setOrgLoading(false);
+            setInviteEmail("");
+        }
+    }
+
+    async function handleRemoveMember(memberId: string) {
+        if (!currentOrg) return;
+        showConfirm("确认移除", "确定要将此成员移出组织吗？", async () => {
+            try {
+                await apiRequest(`/api/v1/organizations/${currentOrg.id}/members/${memberId}`, {
+                    method: "DELETE",
+                    headers: { Authorization: "Bearer " + token },
+                });
+                await loadOrgMembers(currentOrg.id);
+                closeModal();
+            } catch (e) {
+                showAlert("移除失败", "无法移除成员。");
+            }
+        }, "确认移除", "bg-red-600");
+    }
+
+    async function handleLeaveOrg() {
+        if (!currentOrg || !user) return;
+        showConfirm("确认退出", "确定要退出当前组织吗？", async () => {
+            try {
+                await apiRequest(`/api/v1/organizations/${currentOrg.id}/members/${user.id}`, {
+                    method: "DELETE",
+                    headers: { Authorization: "Bearer " + token },
+                });
+                setCurrentOrg(null);
+                setOrgMembers([]);
+                await loadMe(token);
+                closeModal();
+                showAlert("已退出", "您已退出该组织。");
+            } catch (e) {
+                showAlert("退出失败", "无法退出组织。");
+            }
+        }, "确认退出", "bg-red-600");
+    }
+
+    async function handleAddToBlacklist(memberId: string, reason: string = "") {
+        if (!currentOrg) return;
+        try {
+            await apiRequest(`/api/v1/organizations/${currentOrg.id}/blacklist`, {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token },
+                body: JSON.stringify({ userId: memberId, reason }),
+            });
+            await loadOrgBlacklist(currentOrg.id);
+            showAlert("已添加", "用户已添加到黑名单。");
+        } catch (e) {
+            showAlert("添加失败", "无法添加到黑名单。");
+        }
+    }
+
+    async function handleRemoveFromBlacklist(memberId: string) {
+        if (!currentOrg) return;
+        try {
+            await apiRequest(`/api/v1/organizations/${currentOrg.id}/blacklist/${memberId}`, {
+                method: "DELETE",
+                headers: { Authorization: "Bearer " + token },
+            });
+            await loadOrgBlacklist(currentOrg.id);
+        } catch (e) {
+            showAlert("移除失败", "无法从黑名单移除。");
+        }
+    }
+
     async function loadMe(authToken: string) {
         setLoading(true);
         setError("");
@@ -393,6 +583,9 @@ function App() {
                 id: data.id,
                 email: data.email,
                 balance: data.balance,
+                organizationId: data.organizationId,
+                role: data.role || 'user',
+                isBlacklisted: data.isBlacklisted || false,
                 llmProvider: data.llmProvider,
                 llmModel: data.llmModel,
                 llmApiKey: data.llmApiKey,
@@ -446,6 +639,9 @@ function App() {
                 id: data.user.id,
                 email: data.user.email,
                 balance: data.user.balance,
+                organizationId: data.user.organizationId,
+                role: data.user.role || 'user',
+                isBlacklisted: data.user.isBlacklisted || false,
                 llmProvider: data.user.llmProvider,
                 llmModel: data.user.llmModel,
                 llmApiKey: data.user.llmApiKey,
@@ -597,6 +793,9 @@ function App() {
                 id: me.id,
                 email: me.email,
                 balance: me.balance,
+                organizationId: me.organizationId,
+                role: me.role || 'user',
+                isBlacklisted: me.isBlacklisted || false,
                 llmProvider: me.llmProvider,
                 llmModel: me.llmModel,
                 llmApiKey: me.llmApiKey,
@@ -1442,7 +1641,7 @@ function App() {
             case 'task_detail': return '执行详情';
             case 'projects': return '项目管理';
             case 'tasks': return '任务历史';
-            case 'teams': return '团队协作';
+            case 'teams': return '我的组织';
             case 'settings': return '系统设置';
             case 'materials': return '素材中心';
             case 'agent_studio': return 'Agent 工作台';
@@ -1462,8 +1661,7 @@ function App() {
                     <li><button onClick={() => { setDashView('projects'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'projects' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">view_kanban</span><span className="text-sm font-medium">项目管理</span></button></li>
                     <li><button onClick={() => { setDashView('tasks'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'tasks' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">history</span><span className="text-sm font-medium">任务历史</span></button></li>
                     <li><button onClick={() => { setDashView('materials'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'materials' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">topic</span><span className="text-sm font-medium">素材中心</span></button></li>
-                    {/* <li><button onClick={() => { setDashView('agent_studio'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'agent_studio' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">smart_toy</span><span className="text-sm font-medium">Agent 工作台</span></button></li>
-                    <li><button onClick={() => { setDashView('teams'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'teams' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">group</span><span className="text-sm font-medium">团队协作</span></button></li> */}
+                    <li><button onClick={() => { setDashView('teams'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'teams' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">apartment</span><span className="text-sm font-medium">我的组织</span></button></li>
                     <li><button onClick={() => { setDashView('settings'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors group text-left ${dashView === 'settings' ? 'bg-gradient-primary shadow-lg shadow-purple-600/20 text-white' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className={`material-symbols-outlined ${dashView === 'settings' ? 'fill' : 'group-hover:text-accent-blue'}`}>settings</span><span className="text-sm font-medium">设置</span></button></li>
                 </ul>
             </nav>
@@ -1883,11 +2081,213 @@ function App() {
                     )}
 
                     {dashView === 'teams' && (
-                        <div className="mx-auto max-w-7xl flex flex-col items-center justify-center min-h-[400px] gap-4">
-                            <div className="size-20 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400"><span className="material-symbols-outlined" style={{ fontSize: "48px" }}>group</span></div>
-                            <h2 className="text-2xl font-bold">{getPageTitle()}</h2>
-                            <p className="text-slate-500 text-center max-w-md">此模块正在开发中，敬请期待。</p>
-                            <button onClick={() => setDashView('dashboard')} className="mt-4 rounded-lg bg-slate-200 dark:bg-slate-800 px-6 py-2 text-sm font-medium text-slate-700 dark:text-slate-300">返回仪表盘</button>
+                        <div className="mx-auto max-w-7xl flex flex-col gap-6">
+                            {/* Header */}
+                            <div className="flex flex-wrap items-center justify-between gap-4">
+                                <div>
+                                    <h2 className="text-2xl font-bold flex items-center gap-2">
+                                        <span className="material-symbols-outlined text-accent-blue">apartment</span>
+                                        我的组织
+                                    </h2>
+                                    <p className="text-sm text-slate-500 mt-1">管理您的组织成员和共享余额</p>
+                                </div>
+                                {!currentOrg && (
+                                    <button
+                                        onClick={() => setIsOrgModalOpen(true)}
+                                        className="flex items-center gap-2 bg-gradient-primary text-white px-4 py-2 rounded-lg font-medium shadow-lg hover:shadow-purple-600/30 transition-all"
+                                    >
+                                        <span className="material-symbols-outlined">add</span>
+                                        创建组织
+                                    </button>
+                                )}
+                            </div>
+
+                            {orgLoading ? (
+                                <div className="flex items-center justify-center py-20">
+                                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-accent-blue"></div>
+                                </div>
+                            ) : !currentOrg ? (
+                                /* No Organization State */
+                                <div className="bg-surface-light dark:bg-surface-dark rounded-xl border border-slate-200 dark:border-slate-800 p-8 text-center">
+                                    <div className="size-16 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 mx-auto mb-4">
+                                        <span className="material-symbols-outlined" style={{ fontSize: "32px" }}>group_off</span>
+                                    </div>
+                                    <h3 className="text-lg font-bold mb-2">您还没有加入任何组织</h3>
+                                    <p className="text-slate-500 mb-6 max-w-md mx-auto">
+                                        创建一个新组织并邀请团队成员，共享管理员余额，协同完成自动化任务。
+                                    </p>
+                                    <button
+                                        onClick={() => setIsOrgModalOpen(true)}
+                                        className="inline-flex items-center gap-2 bg-gradient-primary text-white px-6 py-3 rounded-lg font-medium"
+                                    >
+                                        <span className="material-symbols-outlined">add</span>
+                                        创建我的组织
+                                    </button>
+                                </div>
+                            ) : (
+                                /* Organization Dashboard */
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                                    {/* Organization Info Card */}
+                                    <div className="lg:col-span-1 bg-surface-light dark:bg-surface-dark rounded-xl border border-slate-200 dark:border-slate-800 p-6">
+                                        <div className="flex items-start justify-between mb-4">
+                                            <div className="size-12 rounded-lg bg-gradient-primary flex items-center justify-center text-white">
+                                                <span className="material-symbols-outlined">apartment</span>
+                                            </div>
+                                            {user?.role === 'org_admin' && (
+                                                <span className="px-2 py-1 bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-xs font-bold rounded-full">管理员</span>
+                                            )}
+                                        </div>
+                                        <h3 className="text-xl font-bold mb-1">{currentOrg.name}</h3>
+                                        <p className="text-sm text-slate-500 mb-4">组织ID: {currentOrg.id.slice(0, 8)}...</p>
+
+                                        <div className="space-y-3 pt-4 border-t border-slate-200 dark:border-slate-700">
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-sm text-slate-500">组织余额</span>
+                                                <span className="text-lg font-bold text-accent-blue">{currentOrg.balance} 积分</span>
+                                            </div>
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-sm text-slate-500">成员数量</span>
+                                                <span className="font-medium">{orgMembers.length} 人</span>
+                                            </div>
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-sm text-slate-500">您的角色</span>
+                                                <span className="font-medium">{user?.role === 'org_admin' ? '管理员' : '成员'}</span>
+                                            </div>
+                                        </div>
+
+                                        <button
+                                            onClick={handleLeaveOrg}
+                                            className="w-full mt-6 flex items-center justify-center gap-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 py-2 rounded-lg transition-colors text-sm font-medium"
+                                        >
+                                            <span className="material-symbols-outlined" style={{ fontSize: "18px" }}>logout</span>
+                                            退出组织
+                                        </button>
+                                    </div>
+
+                                    {/* Members List */}
+                                    <div className="lg:col-span-2 bg-surface-light dark:bg-surface-dark rounded-xl border border-slate-200 dark:border-slate-800">
+                                        <div className="p-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+                                            <h4 className="font-bold flex items-center gap-2">
+                                                <span className="material-symbols-outlined text-slate-400">group</span>
+                                                组织成员 ({orgMembers.length})
+                                            </h4>
+                                            {user?.role === 'org_admin' && (
+                                                <button
+                                                    onClick={() => handleAddMember('', 'user')}
+                                                    className="text-sm text-accent-blue hover:underline flex items-center gap-1"
+                                                >
+                                                    <span className="material-symbols-outlined" style={{ fontSize: "16px" }}>person_add</span>
+                                                    添加成员
+                                                </button>
+                                            )}
+                                        </div>
+                                        <div className="divide-y divide-slate-200 dark:divide-slate-700 max-h-[400px] overflow-y-auto">
+                                            {orgMembers.length === 0 ? (
+                                                <div className="p-8 text-center text-slate-500">
+                                                    <span className="material-symbols-outlined text-4xl mb-2">person_off</span>
+                                                    <p>暂无成员</p>
+                                                </div>
+                                            ) : orgMembers.map(member => (
+                                                <div key={member.id} className="p-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="size-10 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white font-bold text-sm">
+                                                            {member.email.substring(0, 2).toUpperCase()}
+                                                        </div>
+                                                        <div>
+                                                            <p className="font-medium">{member.email}</p>
+                                                            <p className="text-xs text-slate-500">
+                                                                {member.role === 'org_admin' ? '管理员' : '成员'}
+                                                                {member.id === user?.id && ' (您)'}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                    {user?.role === 'org_admin' && member.id !== user?.id && (
+                                                        <div className="flex items-center gap-2">
+                                                            <button
+                                                                onClick={() => handleAddToBlacklist(member.id, '管理员操作')}
+                                                                className="p-1 text-slate-400 hover:text-orange-500 transition-colors"
+                                                                title="加入黑名单"
+                                                            >
+                                                                <span className="material-symbols-outlined" style={{ fontSize: "20px" }}>block</span>
+                                                            </button>
+                                                            <button
+                                                                onClick={() => handleRemoveMember(member.id)}
+                                                                className="p-1 text-slate-400 hover:text-red-500 transition-colors"
+                                                                title="移除成员"
+                                                            >
+                                                                <span className="material-symbols-outlined" style={{ fontSize: "20px" }}>person_remove</span>
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    {/* Blacklist Section (Admin Only) */}
+                                    {user?.role === 'org_admin' && orgBlacklist.length > 0 && (
+                                        <div className="lg:col-span-3 bg-surface-light dark:bg-surface-dark rounded-xl border border-slate-200 dark:border-slate-800">
+                                            <div className="p-4 border-b border-slate-200 dark:border-slate-700">
+                                                <h4 className="font-bold flex items-center gap-2 text-red-500">
+                                                    <span className="material-symbols-outlined">block</span>
+                                                    黑名单 ({orgBlacklist.length})
+                                                </h4>
+                                            </div>
+                                            <div className="divide-y divide-slate-200 dark:divide-slate-700">
+                                                {orgBlacklist.map(entry => (
+                                                    <div key={entry.id} className="p-4 flex items-center justify-between">
+                                                        <div>
+                                                            <p className="font-medium">用户 ID: {entry.userId.slice(0, 8)}...</p>
+                                                            <p className="text-sm text-slate-500">{entry.reason || '无原因'}</p>
+                                                        </div>
+                                                        <button
+                                                            onClick={() => handleRemoveFromBlacklist(entry.userId)}
+                                                            className="text-sm text-accent-blue hover:underline"
+                                                        >
+                                                            解除
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Create Organization Modal */}
+                            {isOrgModalOpen && (
+                                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+                                    <div className="w-full max-w-md rounded-xl bg-surface-light dark:bg-surface-dark p-6 shadow-2xl border border-slate-200 dark:border-slate-800">
+                                        <div className="flex items-center justify-between mb-6">
+                                            <h3 className="text-xl font-bold">创建组织</h3>
+                                            <button onClick={() => setIsOrgModalOpen(false)} className="p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full">
+                                                <span className="material-symbols-outlined">close</span>
+                                            </button>
+                                        </div>
+                                        <form onSubmit={handleCreateOrg} className="flex flex-col gap-4">
+                                            <div>
+                                                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">组织名称</label>
+                                                <input
+                                                    type="text"
+                                                    value={newOrgName}
+                                                    onChange={(e) => setNewOrgName(e.target.value)}
+                                                    className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-3 text-sm"
+                                                    placeholder="输入组织名称"
+                                                    required
+                                                />
+                                            </div>
+                                            <p className="text-xs text-slate-500">创建后您将成为该组织的管理员，可以邀请其他成员加入。</p>
+                                            <button
+                                                type="submit"
+                                                disabled={orgLoading}
+                                                className="w-full bg-gradient-primary text-white py-3 rounded-lg font-medium"
+                                            >
+                                                {orgLoading ? '创建中...' : '创建组织'}
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     )}
                     {dashView === 'materials' && (

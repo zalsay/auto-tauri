@@ -35,13 +35,16 @@ type LoginRequest struct {
 }
 
 type AuthResponseUser struct {
-	ID          string `json:"id"`
-	Email       string `json:"email"`
-	Balance     int64  `json:"balance"`
-	LLMProvider string `json:"llmProvider"`
-	LLMModel    string `json:"llmModel"`
-	LLMAPIKey   string `json:"llmApiKey"`
-	LLMBaseURL  string `json:"llmBaseUrl"`
+	ID             string  `json:"id"`
+	Email          string  `json:"email"`
+	Balance        int64   `json:"balance"`
+	OrganizationID *string `json:"organizationId"`
+	Role           string  `json:"role"`
+	IsBlacklisted  bool    `json:"isBlacklisted"`
+	LLMProvider    string  `json:"llmProvider"`
+	LLMModel       string  `json:"llmModel"`
+	LLMAPIKey      string  `json:"llmApiKey"`
+	LLMBaseURL     string  `json:"llmBaseUrl"`
 }
 
 type AuthResponse struct {
@@ -145,13 +148,16 @@ func meHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, AuthResponseUser{
-		ID:          user.ID,
-		Email:       user.Email,
-		Balance:     user.Balance,
-		LLMProvider: user.LLMProvider,
-		LLMModel:    user.LLMModel,
-		LLMAPIKey:   user.LLMAPIKey,
-		LLMBaseURL:  user.LLMBaseURL,
+		ID:             user.ID,
+		Email:          user.Email,
+		Balance:        user.Balance,
+		OrganizationID: user.OrganizationID,
+		Role:           user.Role,
+		IsBlacklisted:  user.IsBlacklisted,
+		LLMProvider:    user.LLMProvider,
+		LLMModel:       user.LLMModel,
+		LLMAPIKey:      user.LLMAPIKey,
+		LLMBaseURL:     user.LLMBaseURL,
 	})
 }
 
@@ -203,13 +209,16 @@ func loginHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, AuthResponse{
 		Token: tokenString,
 		User: AuthResponseUser{
-			ID:          user.ID,
-			Email:       user.Email,
-			Balance:     user.Balance,
-			LLMProvider: user.LLMProvider,
-			LLMModel:    user.LLMModel,
-			LLMAPIKey:   user.LLMAPIKey,
-			LLMBaseURL:  user.LLMBaseURL,
+			ID:             user.ID,
+			Email:          user.Email,
+			Balance:        user.Balance,
+			OrganizationID: user.OrganizationID,
+			Role:           user.Role,
+			IsBlacklisted:  user.IsBlacklisted,
+			LLMProvider:    user.LLMProvider,
+			LLMModel:       user.LLMModel,
+			LLMAPIKey:      user.LLMAPIKey,
+			LLMBaseURL:     user.LLMBaseURL,
 		},
 	})
 }
