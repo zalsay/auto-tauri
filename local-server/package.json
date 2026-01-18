@@ -6,13 +6,20 @@
   "main": "index.js",
   "scripts": {
     "start": "opencode serve",
-    "serve": "opencode serve --port 4096 --hostname 127.0.0.1",
+    "serve": "opencode serve --port 54096 --hostname 127.0.0.1 --cors http://localhost:1420 tauri://localhost",
+    "serve:opencode": "./start-opencode.sh",
     "web": "opencode web --port 3000",
     "test": "node test-client.js && node test-omo-integration.js",
     "test:omo": "node test-omo-integration.js",
     "demo": "node session-demo.js"
   },
-  "keywords": ["opencode", "oh-my-opencode", "ai", "agent", "development"],
+  "keywords": [
+    "opencode",
+    "oh-my-opencode",
+    "ai",
+    "agent",
+    "development"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {

@@ -1,8 +1,10 @@
 import { useEffect, useState, useRef } from "react";
 import { apiRequest, clearStoredToken, getStoredToken, setStoredToken } from "./api";
 import { Command } from "@tauri-apps/plugin-shell";
+import { open } from "@tauri-apps/plugin-dialog";
 import MaterialCenter from "./MaterialCenter";
 import AgentStudio from "./pages/AgentStudio";
+import * as opencode from "./opencodeService";
 
 type View = "login" | "register" | "main";
 type DashView = "dashboard" | "projects" | "tasks" | "teams" | "settings" | "materials" | "task_detail" | "agent_studio";
@@ -285,7 +287,7 @@ function App() {
     const [projectName, setProjectName] = useState("");
     const [projectPrompt, setProjectPrompt] = useState("");
     const [projectUrl, setProjectUrl] = useState("");
-    const [projectType, setProjectType] = useState<"workflow" | "scrape">("workflow");
+    const [projectType, setProjectType] = useState<"workflow" | "scrape" | "local_workflow">("workflow");
     const [projectScreenshot, setProjectScreenshot] = useState(false);
     const [projectPlatform, setProjectPlatform] = useState("xiaohongshu");
     const [useAIRewrite, setUseAIRewrite] = useState(false);
@@ -358,6 +360,13 @@ function App() {
     const [selectedMaterialIds, setSelectedMaterialIds] = useState<string[]>([]);
     const [randomPublishCount, setRandomPublishCount] = useState(1);
     const [publishLoading, setPublishLoading] = useState(false);
+
+    // Opencode Execution State
+    const [opencodeSessionId, setOpencodeSessionId] = useState<string>("");
+    const [opcodeEventSource, setOpencodeEventSource] = useState<EventSource | null>(null);
+    const [useOpencodeExecution, setUseOpencodeExecution] = useState(true); // Toggle between opencode and sidecar
+    const [localWorkflowPath, setLocalWorkflowPath] = useState(() => localStorage.getItem("local_workflow_path") || "");
+
 
     useEffect(() => {
         const storedToken = getStoredToken();
@@ -980,6 +989,167 @@ function App() {
         }
     }
 
+    /**
+     * Execute project using Opencode server APIs
+     * This replaces sidecar execution with HTTP calls to opencode-server
+     */
+    async function handleExecuteWithOpencode(project: Project) {
+        if (!token || !user) return;
+        setLoading(true);
+        setTaskLogs([]);
+        setTaskStatus("pending");
+        setLastResultData("");
+        setActiveProject(project);
+
+        // Close existing SSE connection if any
+        if (opcodeEventSource) {
+            opcodeEventSource.close();
+            setOpencodeEventSource(null);
+        }
+
+        try {
+            // 1. Check opencode server health
+            setTaskLogs(logs => [...logs, `[System] 正在连接 Opencode 服务器...`]);
+            const isHealthy = await opencode.checkHealth();
+            if (!isHealthy) {
+                throw new Error('Opencode 服务器不可用，请运行: cd local-server && npm run serve');
+            }
+            setTaskLogs(logs => [...logs, `[System] ✓ Opencode 服务器连接成功`]);
+
+            // 2. Create backend task record
+            const data = (await apiRequest(`/api/v1/projects/${project.id}/execute`, {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token },
+            })) as { taskId: string; project: Project; message: string };
+
+            // Refresh balance
+            loadMe(token);
+
+            // 3. Transition UI
+            setActiveTaskId(data.taskId);
+            setDashView("task_detail");
+            setTaskStatus("running");
+            setTaskLogs(logs => [...logs,
+            `[System] 启动项目: ${project.name}`,
+            `[System] 任务 ID: ${data.taskId}`,
+                `[System] 正在创建 Opencode 会话...`
+            ]);
+
+            // 4. Create opencode session (using opencode CLI API)
+            const session = await opencode.createSession(`项目: ${project.name}`);
+            setOpencodeSessionId(session.id);
+            setTaskLogs(logs => [...logs, `[System] ✓ 会话已创建: ${session.id.slice(0, 8)}...`]);
+
+            // 5. Subscribe to SSE events for real-time updates
+            setTaskLogs(logs => [...logs, `[System] 正在订阅实时更新...`]);
+            const eventSource = opencode.subscribeToSession(session.id, {
+                onMessage: (message) => {
+                    console.log('[Opencode] Message:', message);
+                    if (message.parts) {
+                        message.parts.forEach(part => {
+                            if (part.type === 'text' && part.text) {
+                                setTaskLogs(logs => [...logs, `[AI] ${part.text.slice(0, 200)}${part.text.length > 200 ? '...' : ''}`]);
+                            } else if (part.type === 'reasoning' && part.text) {
+                                setTaskLogs(logs => [...logs, `[Thinking] ${part.text.slice(0, 100)}...`]);
+                            }
+                        });
+                    }
+                },
+                onToolUse: (toolName, input) => {
+                    setTaskLogs(logs => [...logs, `[Tool] 调用 ${toolName}: ${JSON.stringify(input).slice(0, 100)}...`]);
+                },
+                onToolResult: (toolName, result) => {
+                    setTaskLogs(logs => [...logs, `[Tool] ${toolName} 完成`]);
+                },
+                onError: (_error) => {
+                    // SSE errors are normal when connection closes after task completes
+                    console.log('[Opencode] SSE connection closed');
+                },
+                onComplete: () => {
+                    setTaskStatus('completed');
+                    setLoading(false);
+                    eventSource.close();
+                    setOpencodeEventSource(null);
+                    setTaskLogs(logs => [...logs, `[System] ✓ 任务执行完成`]);
+                    // Complete task on backend
+                    apiRequest(`/api/v1/tasks/${data.taskId}/complete`, {
+                        method: "POST",
+                        headers: { Authorization: "Bearer " + token },
+                        body: JSON.stringify({ status: 'completed', result: '任务通过 Opencode 完成' }),
+                    }).catch(console.error);
+                }
+            });
+            setOpencodeEventSource(eventSource);
+            setTaskLogs(logs => [...logs, `[System] ✓ 已订阅实时更新`]);
+
+            // 6. Send the task as a /cowork command with streaming output
+            // 6. Send the task as a /cowork command with streaming output
+            const taskPrompt = project.prompt || `执行项目「${project.name}」的自动化任务`;
+
+            setTaskLogs(logs => [...logs, `[System] 发送任务: ${taskPrompt}`]);
+            if (localWorkflowPath) {
+                setTaskLogs(logs => [...logs, `[System] 工作目录限制: ${localWorkflowPath}`]);
+            }
+
+            let finalResult = '';
+            const response = await opencode.sendCoworkCommandStreaming(
+                session.id,
+                taskPrompt,
+                (_chunk) => {
+                    // Chunks are now handled via SSE, so we ignore them here
+                    // to avoid duplicate logs
+                },
+                localWorkflowPath // Pass restriction path to backend service
+            );
+            console.log('[Opencode] Cowork response:', response);
+
+            // Use streaming result or fall back to response parts
+            if (finalResult) {
+                setLastResultData(JSON.stringify({
+                    status: 'success',
+                    data: { message: finalResult }
+                }));
+            } else if (response?.parts) {
+                response.parts.forEach(part => {
+                    if (part.type === 'text' && part.text) {
+                        setTaskLogs(logs => [...logs, `[Result] ${part.text}`]);
+                        setLastResultData(JSON.stringify({
+                            status: 'success',
+                            data: { message: part.text }
+                        }));
+                    }
+                });
+            }
+            // Close SSE after getting HTTP response
+            eventSource.close();
+            setOpencodeEventSource(null);
+
+            setTaskStatus('completed');
+            setLoading(false);
+            setTaskLogs(logs => [...logs, `[System] ✓ 任务执行完成`]);
+
+            // Complete task on backend
+            apiRequest(`/api/v1/tasks/${data.taskId}/complete`, {
+                method: "POST",
+                headers: { Authorization: "Bearer " + token },
+                body: JSON.stringify({
+                    status: 'completed',
+                    result: finalResult || response?.parts?.find(p => p.text)?.text || '任务完成'
+                }),
+            }).catch(console.error);
+
+        } catch (e: any) {
+            console.error('[handleExecuteWithOpencode] Error:', e);
+            showAlert("任务启动失败", e.message || "无法连接到 Opencode 服务器。");
+            setTaskStatus('failed');
+            setLastResultData(JSON.stringify({
+                status: 'failed',
+                data: { message: e.message || '任务启动失败' }
+            }));
+            setLoading(false);
+        }
+    }
+
     async function handleDeleteTask(taskId: string) {
         showConfirm("确认删除记录", "删除任务执行历史记录，确定继续吗？", async () => {
             try {
@@ -1265,6 +1435,24 @@ function App() {
         loadMe(token);
 
         return { content: response.content, cost: response.cost };
+    }
+
+
+
+    async function handleSelectWorkflowFolder() {
+        try {
+            const selected = await open({
+                directory: true,
+                multiple: false,
+                defaultPath: localWorkflowPath || undefined,
+            });
+            if (selected && typeof selected === 'string') {
+                setLocalWorkflowPath(selected);
+                localStorage.setItem("local_workflow_path", selected);
+            }
+        } catch (err) {
+            console.error("Failed to select directory:", err);
+        }
     }
 
     async function handlePublishWithMaterial() {
@@ -1797,11 +1985,11 @@ function App() {
                                         <div key={p.id} className="rounded-xl bg-surface-light p-5 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 flex flex-col gap-3">
                                             <div className="flex justify-between items-start">
                                                 <h4 className="font-bold text-slate-900 dark:text-white truncate">{p.name}</h4>
-                                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${p.type === 'workflow' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{p.type === 'workflow' ? '自动工作流' : '抓取'}</span>
+                                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${p.type === 'workflow' ? 'bg-purple-100 text-purple-700' : p.type === 'local_workflow' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>{p.type === 'workflow' ? '自动工作流' : p.type === 'local_workflow' ? '本地工作流' : '抓取'}</span>
                                             </div>
                                             <p className="text-xs text-slate-500 line-clamp-2 h-8">{p.prompt}</p>
                                             <div className="flex gap-2 mt-2">
-                                                <button onClick={() => handleExecuteProject(p)} className="flex-1 bg-blue-50 dark:bg-blue-900/20 text-accent-blue px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-100 transition-colors">执行</button>
+                                                <button onClick={() => p.type === 'local_workflow' ? handleExecuteWithOpencode(p) : handleExecuteProject(p)} className="flex-1 bg-blue-50 dark:bg-blue-900/20 text-accent-blue px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-100 transition-colors">执行</button>
                                                 <button onClick={() => { handleOpenEditModal(p); setDashView('projects'); }} className="px-3 py-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold transition-colors">管理</button>
                                             </div>
                                         </div>
@@ -1821,11 +2009,11 @@ function App() {
                                 {projectsList.length === 0 ? <div className="text-center py-20 text-slate-500 bg-surface-light dark:bg-surface-dark rounded-xl border border-dashed border-slate-300 dark:border-slate-700">尚未创建项目</div> : projectsList.map(p => (
                                     <div key={p.id} className="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 flex items-center justify-between">
                                         <div className="flex-1">
-                                            <div className="flex items-center gap-3 mb-1"><h4 className="text-lg font-bold text-slate-900 dark:text-white">{p.name}</h4><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${p.type === 'workflow' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{p.type === 'workflow' ? '自动工作流' : '抓取'}</span></div>
+                                            <div className="flex items-center gap-3 mb-1"><h4 className="text-lg font-bold text-slate-900 dark:text-white">{p.name}</h4><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${p.type === 'workflow' ? 'bg-purple-100 text-purple-700' : p.type === 'local_workflow' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>{p.type === 'workflow' ? '自动工作流' : p.type === 'local_workflow' ? '本地工作流' : '抓取'}</span></div>
                                             <p className="text-sm text-slate-500 line-clamp-1">{p.prompt}</p>
                                         </div>
                                         <div className="flex gap-3">
-                                            <button onClick={() => handleOpenPublishDialog(p)} className="flex items-center gap-2 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 px-4 py-2 rounded-lg text-sm font-bold hover:bg-purple-200 dark:hover:bg-purple-900/50 transition-colors shadow-sm"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>play_arrow</span>启动</button>
+                                            <button onClick={() => p.type === 'local_workflow' ? handleExecuteWithOpencode(p) : handleOpenPublishDialog(p)} className={`flex items-center gap-2 ${p.type === 'local_workflow' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-900/50' : 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/50'} px-4 py-2 rounded-lg text-sm font-bold transition-colors shadow-sm`}><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>{p.type === 'local_workflow' ? 'terminal' : 'play_arrow'}</span>{p.type === 'local_workflow' ? '执行' : '启动'}</button>
                                             {/* <button onClick={() => { handleOpenAIWorkflowDialog(p); }} className="flex items-center gap-2 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 px-4 py-2 rounded-lg text-sm font-bold hover:bg-purple-200 dark:hover:bg-purple-900/50 transition-colors shadow-sm"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>auto_awesome</span>AI生成</button> */}
                                             <button onClick={() => handleOpenEditModal(p)} className="p-2 rounded-lg text-slate-400 hover:text-accent-blue hover:bg-blue-50 dark:hover:bg-red-900/20 transition-colors"><span className="material-symbols-outlined">edit</span></button>
                                             <button onClick={() => handleDeleteProject(p.id)} className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"><span className="material-symbols-outlined">delete</span></button>
@@ -2077,6 +2265,37 @@ function App() {
                                     </div>
                                 </form>
                             </div>
+
+                            {/* Local Workflow Settings */}
+                            <div className="rounded-2xl bg-surface-light p-8 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800">
+                                <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+                                    <span className="material-symbols-outlined text-green-500">folder_managed</span>
+                                    本地工作流设置
+                                </h3>
+                                <div className="flex flex-col gap-4">
+                                    <div>
+                                        <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">工作目录限制</label>
+                                        <div className="text-xs text-slate-500 mb-2">设置后，Opencode 的执行将被限制在此目录内，防止误操作其他文件。</div>
+                                        <div className="flex gap-2">
+                                            <input
+                                                type="text"
+                                                className="flex-1 rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-accent-blue/20 cursor-not-allowed opacity-75"
+                                                placeholder="请选择工作目录..."
+                                                value={localWorkflowPath}
+                                                readOnly
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={handleSelectWorkflowFolder}
+                                                className="bg-slate-200 dark:bg-slate-700 px-4 py-2 rounded-xl text-sm font-medium hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors whitespace-nowrap"
+                                            >
+                                                选择目录
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
                         </div>
                     )}
 
@@ -2306,16 +2525,20 @@ function App() {
                         <div className="mb-6 flex items-center justify-between"><h3 className="text-xl font-bold text-slate-900 dark:text-white">{isEditing ? "修改自动化项目" : "新建自动化项目"}</h3><button onClick={() => setIsProjectModalOpen(false)} className="rounded-full p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"><span className="material-symbols-outlined">close</span></button></div>
                         <form onSubmit={handleSubmitProject} className="flex flex-col gap-4">
                             <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">项目名称</label><input type="text" className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" placeholder="例如：发布小红书笔记" value={projectName} onChange={(e) => setProjectName(e.target.value)} required /></div>
-                            <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">项目类型</label><div className="flex gap-4"><button type="button" onClick={() => setProjectType('workflow')} className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${projectType === 'workflow' ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
-                            ><span className="text-sm font-bold text-slate-900 dark:text-white">自动工作流</span><span className="text-[10px] text-slate-500">执行复杂交互自动化</span></button><button type="button" onClick={() => { }} className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all border-slate-200 dark:border-slate-700 opacity-50 cursor-not-allowed`}
+                            <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">项目类型</label><div className="grid grid-cols-3 gap-3"><button type="button" onClick={() => setProjectType('workflow')} className={`p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${projectType === 'workflow' ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
+                            ><span className="text-sm font-bold text-slate-900 dark:text-white">自动工作流</span><span className="text-[10px] text-slate-500">浏览器自动化</span></button><button type="button" onClick={() => setProjectType('local_workflow')} className={`p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${projectType === 'local_workflow' ? 'border-green-500 bg-green-50 dark:bg-green-900/20' : 'border-slate-200 dark:border-slate-700'}`}
+                            ><span className="text-sm font-bold text-slate-900 dark:text-white">本地工作流</span><span className="text-[10px] text-slate-500">AI 代理执行本地任务</span></button><button type="button" onClick={() => { }} className={`p-3 rounded-lg border text-left flex flex-col gap-1 transition-all border-slate-200 dark:border-slate-700 opacity-50 cursor-not-allowed`}
                             ><span className="text-sm font-bold text-slate-900 dark:text-white">网页抓取</span><span className="text-[10px] text-slate-500">提取结构化数据</span></button></div></div>
-                            <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">项目平台</label><div className="flex gap-4"><button type="button" className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all border-accent-blue bg-blue-50 dark:bg-blue-900/20`}
-                            ><div className="flex items-center gap-2"><img src="/src/assets/小红书.svg" alt="小红书" className="w-5 h-5" /><span className="text-sm font-bold text-slate-900 dark:text-white">小红书笔记</span></div><span className="text-[10px] text-slate-500">当前仅支持小红书</span></button><button type="button" className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all border-slate-200 dark:border-slate-700 opacity-50 cursor-not-allowed`}
-                            ><div className="flex items-center gap-2"><img src="/src/assets/视频号.svg" alt="视频号" className="w-5 h-5" /><span className="text-sm font-bold text-slate-900 dark:text-white">微信视频号</span></div><span className="text-[10px] text-slate-500">即将上线</span></button></div></div>
-                            <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">是否使用 AI 改写</label><div className="flex gap-4"><button type="button" onClick={() => setUseAIRewrite(true)} className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${useAIRewrite ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
-                            ><span className="text-sm font-bold text-slate-900 dark:text-white">是</span><span className="text-[10px] text-slate-500">AI将自动改写发布正文</span></button><button type="button" onClick={() => setUseAIRewrite(false)} className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${!useAIRewrite ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
-                            ><span className="text-sm font-bold text-slate-900 dark:text-white">否</span><span className="text-[10px] text-slate-500">使用素材内容发布</span></button></div></div>
-                            {useAIRewrite && <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">AI 提示词 (Prompt) <span className="text-red-500">*</span></label><textarea className="w-full rounded-lg border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" rows={4} placeholder="描述需要自动完成的操作步骤..." value={projectPrompt} onChange={(e) => setProjectPrompt(e.target.value)} required /></div>}
+                            {projectType === 'workflow' && <>
+                                <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">项目平台</label><div className="flex gap-4"><button type="button" className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all border-accent-blue bg-blue-50 dark:bg-blue-900/20`}
+                                ><div className="flex items-center gap-2"><img src="/src/assets/小红书.svg" alt="小红书" className="w-5 h-5" /><span className="text-sm font-bold text-slate-900 dark:text-white">小红书笔记</span></div><span className="text-[10px] text-slate-500">当前仅支持小红书</span></button><button type="button" className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all border-slate-200 dark:border-slate-700 opacity-50 cursor-not-allowed`}
+                                ><div className="flex items-center gap-2"><img src="/src/assets/视频号.svg" alt="视频号" className="w-5 h-5" /><span className="text-sm font-bold text-slate-900 dark:text-white">微信视频号</span></div><span className="text-[10px] text-slate-500">即将上线</span></button></div></div>
+                                <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">是否使用 AI 改写</label><div className="flex gap-4"><button type="button" onClick={() => setUseAIRewrite(true)} className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${useAIRewrite ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
+                                ><span className="text-sm font-bold text-slate-900 dark:text-white">是</span><span className="text-[10px] text-slate-500">AI将自动改写发布正文</span></button><button type="button" onClick={() => setUseAIRewrite(false)} className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${!useAIRewrite ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
+                                ><span className="text-sm font-bold text-slate-900 dark:text-white">否</span><span className="text-[10px] text-slate-500">使用素材内容发布</span></button></div></div>
+                                {useAIRewrite && <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">AI 提示词 (Prompt) <span className="text-red-500">*</span></label><textarea className="w-full rounded-lg border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" rows={4} placeholder="描述需要自动完成的操作步骤..." value={projectPrompt} onChange={(e) => setProjectPrompt(e.target.value)} required /></div>}
+                            </>}
+                            {projectType === 'local_workflow' && <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">任务需求 <span className="text-red-500">*</span></label><textarea className="w-full rounded-lg border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" rows={4} placeholder="描述你的需求，例如：&#10;• 查询杭州今日天气并保存到 weather.xlsx&#10;• 抓取知乎热榜前 10 条保存为 JSON&#10;• 搜索 Python 教程并整理成文档" value={projectPrompt} onChange={(e) => setProjectPrompt(e.target.value)} required /></div>}
                             <div className="flex items-center gap-2 p-3 rounded-lg bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800">
                                 <span className="material-symbols-outlined text-purple-600" style={{ fontSize: "18px" }}>auto_awesome</span>
                                 <span className="text-xs text-purple-700 dark:text-purple-300">AI有时候会犯错，请认真甄别</span>
