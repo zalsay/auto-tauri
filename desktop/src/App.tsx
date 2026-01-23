@@ -2,12 +2,15 @@ import { useEffect, useState, useRef } from "react";
 import { apiRequest, clearStoredToken, getStoredToken, setStoredToken } from "./api";
 import { Command } from "@tauri-apps/plugin-shell";
 import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 import MaterialCenter from "./MaterialCenter";
 import AgentStudio from "./pages/AgentStudio";
+import CodingMasterDashboard from "./CodingMasterDashboard";
+import CodingProjectWorkspace from "./components/CodingProjectWorkspace";
 import * as opencode from "./opencodeService";
 
 type View = "login" | "register" | "main";
-type DashView = "dashboard" | "projects" | "tasks" | "teams" | "settings" | "materials" | "task_detail" | "agent_studio";
+type DashView = "dashboard" | "projects" | "tasks" | "teams" | "settings" | "materials" | "task_detail" | "agent_studio" | "mission_control" | "project_detail";
 type TaskStatus = "pending" | "running" | "completed" | "failed" | "ai_rewriting";
 
 interface User {
@@ -99,6 +102,17 @@ interface GlobalModalConfig {
     confirmText?: string;
     confirmColor?: string;
 }
+
+// Project Type Configuration
+const PROJECT_TYPE_CONFIG: Record<string, { label: string; color: string; darkColor: string; icon: string }> = {
+    coding_master: { label: 'Coding全能大师', color: 'bg-orange-100 text-orange-700', darkColor: 'dark:bg-orange-900/30 dark:text-orange-300', icon: 'code' },
+    workflow: { label: '自动工作流', color: 'bg-purple-100 text-purple-700', darkColor: 'dark:bg-purple-900/30 dark:text-purple-300', icon: 'bolt' },
+    local_workflow: { label: '本地工作流', color: 'bg-green-100 text-green-700', darkColor: 'dark:bg-green-900/30 dark:text-green-300', icon: 'terminal' },
+    scrape: { label: '抓取', color: 'bg-blue-100 text-blue-700', darkColor: 'dark:bg-blue-900/30 dark:text-blue-300', icon: 'download' },
+};
+
+// Project type order for grouped display
+const PROJECT_TYPE_ORDER = ['coding_master', 'workflow', 'local_workflow', 'scrape'];
 
 function HyperAgentResultDisplay({ data }: { data: any }) {
     console.log("[HyperAgentResultDisplay] Received raw data:", data);
@@ -287,7 +301,8 @@ function App() {
     const [projectName, setProjectName] = useState("");
     const [projectPrompt, setProjectPrompt] = useState("");
     const [projectUrl, setProjectUrl] = useState("");
-    const [projectType, setProjectType] = useState<"workflow" | "scrape" | "local_workflow">("workflow");
+    const [prdFilePath, setPrdFilePath] = useState("");
+    const [projectType, setProjectType] = useState<"workflow" | "scrape" | "local_workflow" | "coding_master">("workflow");
     const [projectScreenshot, setProjectScreenshot] = useState(false);
     const [projectPlatform, setProjectPlatform] = useState("xiaohongshu");
     const [useAIRewrite, setUseAIRewrite] = useState(false);
@@ -303,6 +318,16 @@ function App() {
     const [llmModel, setLlmModel] = useState("");
     const [llmApiKey, setLlmApiKey] = useState("");
     const [llmBaseUrl, setLlmBaseUrl] = useState("");
+
+    // Coding Settings
+    const [opencodeProvider, setOpencodeProvider] = useState("anthropic");
+    const [opencodeModel, setOpencodeModel] = useState("anthropic/claude-3-5-sonnet-20241022");
+    const [opencodeSmallModel, setOpencodeSmallModel] = useState("anthropic/claude-3-haiku-20240307");
+    const [opencodeApiKey, setOpencodeApiKey] = useState("");
+
+    const [ralphProvider, setRalphProvider] = useState("anthropic");
+    const [ralphModel, setRalphModel] = useState("claude-3-5-sonnet-20241022");
+    const [ralphApiKey, setRalphApiKey] = useState("");
 
     // Lists
     const [projectsList, setProjectsList] = useState<Project[]>([]);
@@ -362,9 +387,7 @@ function App() {
     const [publishLoading, setPublishLoading] = useState(false);
 
     // Opencode Execution State
-    const [opencodeSessionId, setOpencodeSessionId] = useState<string>("");
     const [opcodeEventSource, setOpencodeEventSource] = useState<EventSource | null>(null);
-    const [useOpencodeExecution, setUseOpencodeExecution] = useState(true); // Toggle between opencode and sidecar
     const [localWorkflowPath, setLocalWorkflowPath] = useState(() => localStorage.getItem("local_workflow_path") || "");
 
 
@@ -397,6 +420,93 @@ function App() {
                     setLlmApiKey(user.llmApiKey || "");
                     setLlmBaseUrl(user.llmBaseUrl || "");
                 }
+
+                // Load OpenCode Config
+                invoke('get_opencode_config').then((config: any) => {
+                    if (config) {
+                        // We need to parse the flexible provider structure to find the active keys
+                        // ideally we store the "active" provider name in config or just default to what we have in state if not found.
+                        // But wait, the config structure on rust side has 'provider' as Option<Value>.
+                        // We need to decode it.
+
+                        if (config.model) setOpencodeModel(config.model);
+                        if (config.small_model) setOpencodeSmallModel(config.small_model);
+
+                        if (config.expert_model) {
+                            if (config.expert_model.provider) setRalphProvider(config.expert_model.provider);
+                            if (config.expert_model.model) setRalphModel(config.expert_model.model);
+                        }
+
+                        // Try to extract API keys from provider map
+                        // structure is { [providerName]: { api_key: "..." } }
+                        if (config.provider) {
+                            // We don't have a field for "current active provider" in the config struct on Rust side explicitly for opencode 
+                            // (it just says provider: Option<Value>).
+                            // But usually we might want to store which one is selected? 
+                            // Actually, looking at previous update_opencode_config in App.tsx:
+                            // provider: { [opencodeProvider]: { ... } }
+                            // It saves the map. It doesn't explicitly save "active_provider" for Opencode.
+                            // We might just have to infer or keep the default "anthropic" if strictly not saved.
+                            // OR, we can check which keys exist in the map.
+
+                            // Let's iterate keys of config.provider to see if we can find our current one or any one.
+                            // Since we have separate state for opencodeProvider, maybe we should persist that too?
+                            // For now, let's just try to load the key for the *currently selected* provider in state (default anthropic)
+                            // OR if we want to restore the selection, we need to save it.
+                            // The Rust struct `OpenCodeConfig` has `provider: Option<serde_json::Value>`.
+                            // It seems we missed adding an `active_provider` field if we want to restore selection.
+                            // However, we can live with defaulting to Anthropic for now, but loading the key if available.
+
+                            // Let's try to load keys for the defaults or if we find them.
+                            // Actually, let's check if we can see which provider is "active" by checking the struct we sent.
+                            // We sent: provider: { [opencodeProvider]: ... }
+                            // This effectively just adds to the map.
+
+                            // Allow me to check if I can infer it. 
+                            // If I use the same logic as "expert_model" which I added, that one has `provider` field.
+                            // standard model doesn't have an explicit `active_provider` field in the rust struct I defined (unless I add it).
+                            // But wait, `expert_model` was added as a Value, so it can have anything.
+
+                            // Let's just try to load API keys for the current selection if it exists in the map.
+                            const pMap = config.provider;
+                            // Check for Opencode Provider Key
+                            // implicit issue: we don't know which provider WAS selected for opencode.
+                            // IF the map has only one key, we could assume that.
+                            // Let's assume user likely uses Anthropic.
+
+                            if (pMap.anthropic?.api_key) {
+                                // If we find a key for anthropic, and we are on anthropic, set it.
+                                // Or maybe just pre-fill all known keys? 
+                                // We only have one state `opencodeApiKey` which is bound to the input.
+                                // When user changes provider, we wipe/change the key? 
+                                // The current UI just has one state `opencodeApiKey`. 
+                                // If user switches to OpenAI, this state persists unless we clear it.
+                                // Be better to store a map of keys in memory.
+                                // Refactoring to a map is safer but more complex change.
+                                // For now, let's just load the key for the generic 'anthropic' or whatever is in default state.
+                            }
+
+                            // A simple hack: check if we have a key for the current default 'anthropic'.
+                            // If yes, load it.
+                            if (pMap['anthropic']?.api_key) {
+                                setOpencodeApiKey(pMap['anthropic'].api_key);
+                            }
+                            // Logic for others? 
+                            // If the user previously saved OpenAI, pMap['openai'] would allow us to load it, 
+                            // but we need to know to switch dropdown to OpenAI.
+                            // Lacking `active_provider` in config is a small debt.
+                            // I will check `expert_model.provider` for Ralph, that one IS saved.
+                            if (config.expert_model?.provider) {
+                                const rProv = config.expert_model.provider;
+                                setRalphProvider(rProv);
+                                // Load key for this provider
+                                if (pMap[rProv]?.api_key) {
+                                    setRalphApiKey(pMap[rProv].api_key);
+                                }
+                            }
+                        }
+                    }
+                });
             }
         }
     }, [dashView, token]);
@@ -714,6 +824,44 @@ function App() {
             setProjectScreenshot(false);
             setProjectPlatform("xiaohongshu");
             setUseAIRewrite(false);
+            if (projectType === 'coding_master') {
+                if (prdFilePath) {
+                    // Scenario A: PRD Import
+                    try {
+                        // 1. Extract tasks
+                        const tasks = await invoke<string[]>('extract_tasks_from_prd', { filePath: prdFilePath });
+                        // 2. Sync Plan to Ralph
+                        await invoke('sync_ralph_plan', {
+                            projectPath: projectUrl,
+                            tasks
+                        });
+                        console.log(`Initialized with ${tasks.length} tasks from PRD`);
+                        alert(`项目初始化成功！\n已从 PRD 提取 ${tasks.length} 个任务并生成 Ralph 计划。`);
+                    } catch (e: any) {
+                        console.error("PRD initialization failed:", e);
+                        alert(`PRD 解析失败: ${e.message || e}`);
+                    }
+                } else if (projectPrompt && !isEditing) {
+                    // Scenario B: Smart Dispatch (Only on creation)
+                    try {
+                        const dispatchResult = await invoke<{ agent: string, message: string, success: boolean }>('smart_dispatch_task', {
+                            projectPath: projectUrl,
+                            taskDescription: projectPrompt,
+                            filePath: null
+                        });
+
+                        if (dispatchResult.success) {
+                            alert(`项目初始化成功！\n${dispatchResult.message}`);
+                        } else {
+                            console.error("Smart dispatch failed:", dispatchResult.message);
+                            alert(`项目创建成功，但 AI 初始化失败: ${dispatchResult.message}`);
+                        }
+                    } catch (e: any) {
+                        console.error("Smart dispatch error:", e);
+                    }
+                }
+            }
+
             loadProjects();
         } catch (e) {
             showAlert("操作失败", "无法保存项目配置。");
@@ -732,6 +880,7 @@ function App() {
         setProjectScreenshot(false);
         setProjectPlatform("xiaohongshu");
         setUseAIRewrite(false);
+        setPrdFilePath("");
         setIsProjectModalOpen(true);
     }
 
@@ -745,6 +894,7 @@ function App() {
         setProjectScreenshot(p.screenshot);
         setProjectPlatform((p as any).platform || "xiaohongshu");
         setUseAIRewrite((p as any).useAIRewrite || false);
+        setPrdFilePath("");
         setIsProjectModalOpen(true);
     }
 
@@ -1037,7 +1187,7 @@ function App() {
 
             // 4. Create opencode session (using opencode CLI API)
             const session = await opencode.createSession(`项目: ${project.name}`);
-            setOpencodeSessionId(session.id);
+            // setOpencodeSessionId(session.id);
             setTaskLogs(logs => [...logs, `[System] ✓ 会话已创建: ${session.id.slice(0, 8)}...`]);
 
             // 5. Subscribe to SSE events for real-time updates
@@ -1048,9 +1198,11 @@ function App() {
                     if (message.parts) {
                         message.parts.forEach(part => {
                             if (part.type === 'text' && part.text) {
-                                setTaskLogs(logs => [...logs, `[AI] ${part.text.slice(0, 200)}${part.text.length > 200 ? '...' : ''}`]);
+                                const text = part.text;
+                                setTaskLogs(logs => [...logs, `[AI] ${text.slice(0, 200)}${text.length > 200 ? '...' : ''}`]);
                             } else if (part.type === 'reasoning' && part.text) {
-                                setTaskLogs(logs => [...logs, `[Thinking] ${part.text.slice(0, 100)}...`]);
+                                const text = part.text;
+                                setTaskLogs(logs => [...logs, `[Thinking] ${text.slice(0, 100)}...`]);
                             }
                         });
                     }
@@ -1058,7 +1210,7 @@ function App() {
                 onToolUse: (toolName, input) => {
                     setTaskLogs(logs => [...logs, `[Tool] 调用 ${toolName}: ${JSON.stringify(input).slice(0, 100)}...`]);
                 },
-                onToolResult: (toolName, result) => {
+                onToolResult: (toolName, _result) => {
                     setTaskLogs(logs => [...logs, `[Tool] ${toolName} 完成`]);
                 },
                 onError: (_error) => {
@@ -1204,6 +1356,34 @@ function App() {
                 body: JSON.stringify(payload),
                 headers: { Authorization: "Bearer " + token },
             });
+
+            // Update OpenCode Config
+            const openCodeConfig = {
+                provider: {
+                    [opencodeProvider]: {
+                        ...(opencodeApiKey ? { api_key: opencodeApiKey } : {})
+                    },
+                    ...(ralphProvider !== opencodeProvider ? {
+                        [ralphProvider]: {
+                            ...(ralphApiKey ? { api_key: ralphApiKey } : {})
+                        }
+                    } : {})
+                },
+                model: opencodeModel,
+                small_model: opencodeSmallModel,
+                expert_model: {
+                    provider: ralphProvider,
+                    model: ralphModel,
+                }
+            };
+
+            try {
+                await invoke('update_opencode_config', {
+                    configJson: JSON.stringify(openCodeConfig)
+                });
+            } catch (err: any) {
+                console.error("Failed to update OpenCode config:", err);
+            }
 
             // Refresh user data from server to sync the hidden fields too
             await loadMe(token);
@@ -1530,22 +1710,7 @@ function App() {
     }
 
     // ============ AI Workflow Dialog Handlers ============
-    function handleOpenAIWorkflowDialog(project: Project) {
-        setAIWorkflowProject(project);
-        setAIDialogMessages([
-            { role: 'system', content: `正在为项目「${project.name}」生成 AI 工作流...` }
-        ]);
-        setAIWorkflowSteps([]);
-        setAIGeneratedPrompt("");
-        setAIUserInput("");
-        setAIWorkflowLogs([]);
-        setAIWorkflowExecuting(false);
-        setAIHasStructuredSteps(false);
-        setIsAIWorkflowDialogOpen(true);
 
-        // Trigger initial workflow generation
-        handleAIWorkflowGenerate(project, 'generate');
-    }
 
     async function handleAIWorkflowGenerate(project: Project, action: 'generate' | 'continue' | 'confirm', userMessage?: string) {
         if (!token || !user) return;
@@ -1833,6 +1998,7 @@ function App() {
             case 'settings': return '系统设置';
             case 'materials': return '素材中心';
             case 'agent_studio': return 'Agent 工作台';
+            case 'mission_control': return 'Mission Control';
             default: return '任务大师';
         }
     };
@@ -1849,6 +2015,7 @@ function App() {
                     <li><button onClick={() => { setDashView('projects'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'projects' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">view_kanban</span><span className="text-sm font-medium">项目管理</span></button></li>
                     <li><button onClick={() => { setDashView('tasks'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'tasks' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">history</span><span className="text-sm font-medium">任务历史</span></button></li>
                     <li><button onClick={() => { setDashView('materials'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'materials' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">topic</span><span className="text-sm font-medium">素材中心</span></button></li>
+                    <li><button onClick={() => { setDashView('mission_control'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'mission_control' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">rocket_launch</span><span className="text-sm font-medium">Mission Control</span></button></li>
                     <li><button onClick={() => { setDashView('teams'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'teams' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">apartment</span><span className="text-sm font-medium">我的组织</span></button></li>
                     <li><button onClick={() => { setDashView('settings'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors group text-left ${dashView === 'settings' ? 'bg-gradient-primary shadow-lg shadow-purple-600/20 text-white' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className={`material-symbols-outlined ${dashView === 'settings' ? 'fill' : 'group-hover:text-accent-blue'}`}>settings</span><span className="text-sm font-medium">设置</span></button></li>
                 </ul>
@@ -1981,19 +2148,33 @@ function App() {
                             <div className="flex flex-col gap-4">
                                 <h3 className="text-xl font-bold flex items-center gap-2"><span className="material-symbols-outlined text-accent-blue">quick_reference</span>最近项目</h3>
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                    {projectsList.slice(0, 6).map(p => (
-                                        <div key={p.id} className="rounded-xl bg-surface-light p-5 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 flex flex-col gap-3">
-                                            <div className="flex justify-between items-start">
-                                                <h4 className="font-bold text-slate-900 dark:text-white truncate">{p.name}</h4>
-                                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${p.type === 'workflow' ? 'bg-purple-100 text-purple-700' : p.type === 'local_workflow' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>{p.type === 'workflow' ? '自动工作流' : p.type === 'local_workflow' ? '本地工作流' : '抓取'}</span>
+                                    {projectsList.slice(0, 6).map(p => {
+                                        const typeConfig = PROJECT_TYPE_CONFIG[p.type] || PROJECT_TYPE_CONFIG['xhs_publish'];
+                                        return (
+                                            <div key={p.id} className="rounded-xl bg-surface-light p-5 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 flex flex-col gap-3">
+                                                <div className="flex justify-between items-start">
+                                                    <h4 className="font-bold text-slate-900 dark:text-white truncate">{p.name}</h4>
+                                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${typeConfig.color} ${typeConfig.darkColor}`}>{typeConfig.label}</span>
+                                                </div>
+                                                <p className="text-xs text-slate-500 line-clamp-2 h-8">{p.prompt}</p>
+                                                <div className="flex gap-2 mt-2">
+                                                    <button onClick={() => {
+                                                        if (p.type === 'coding_master') {
+                                                            setActiveProject(p);
+                                                            setDashView('project_detail');
+                                                        } else if (p.type === 'local_workflow') {
+                                                            handleExecuteWithOpencode(p);
+                                                        } else {
+                                                            handleExecuteProject(p);
+                                                        }
+                                                    }} className="flex-1 bg-blue-50 dark:bg-blue-900/20 text-accent-blue px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-100 transition-colors">
+                                                        {p.type === 'coding_master' ? '进入工作台' : '执行'}
+                                                    </button>
+                                                    <button onClick={() => { handleOpenEditModal(p); setDashView('projects'); }} className="px-3 py-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold transition-colors">管理</button>
+                                                </div>
                                             </div>
-                                            <p className="text-xs text-slate-500 line-clamp-2 h-8">{p.prompt}</p>
-                                            <div className="flex gap-2 mt-2">
-                                                <button onClick={() => p.type === 'local_workflow' ? handleExecuteWithOpencode(p) : handleExecuteProject(p)} className="flex-1 bg-blue-50 dark:bg-blue-900/20 text-accent-blue px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-100 transition-colors">执行</button>
-                                                <button onClick={() => { handleOpenEditModal(p); setDashView('projects'); }} className="px-3 py-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold transition-colors">管理</button>
-                                            </div>
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             </div>
                         </div>
@@ -2005,22 +2186,56 @@ function App() {
                                 <h3 className="text-xl font-bold">项目列表</h3>
                                 <button onClick={handleOpenCreateModal} className="bg-gradient-primary text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>add</span>新建项目</button>
                             </div>
-                            <div className="grid grid-cols-1 gap-4">
-                                {projectsList.length === 0 ? <div className="text-center py-20 text-slate-500 bg-surface-light dark:bg-surface-dark rounded-xl border border-dashed border-slate-300 dark:border-slate-700">尚未创建项目</div> : projectsList.map(p => (
-                                    <div key={p.id} className="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 flex items-center justify-between">
-                                        <div className="flex-1">
-                                            <div className="flex items-center gap-3 mb-1"><h4 className="text-lg font-bold text-slate-900 dark:text-white">{p.name}</h4><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${p.type === 'workflow' ? 'bg-purple-100 text-purple-700' : p.type === 'local_workflow' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>{p.type === 'workflow' ? '自动工作流' : p.type === 'local_workflow' ? '本地工作流' : '抓取'}</span></div>
-                                            <p className="text-sm text-slate-500 line-clamp-1">{p.prompt}</p>
-                                        </div>
-                                        <div className="flex gap-3">
-                                            <button onClick={() => p.type === 'local_workflow' ? handleExecuteWithOpencode(p) : handleOpenPublishDialog(p)} className={`flex items-center gap-2 ${p.type === 'local_workflow' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-900/50' : 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/50'} px-4 py-2 rounded-lg text-sm font-bold transition-colors shadow-sm`}><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>{p.type === 'local_workflow' ? 'terminal' : 'play_arrow'}</span>{p.type === 'local_workflow' ? '执行' : '启动'}</button>
-                                            {/* <button onClick={() => { handleOpenAIWorkflowDialog(p); }} className="flex items-center gap-2 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 px-4 py-2 rounded-lg text-sm font-bold hover:bg-purple-200 dark:hover:bg-purple-900/50 transition-colors shadow-sm"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>auto_awesome</span>AI生成</button> */}
-                                            <button onClick={() => handleOpenEditModal(p)} className="p-2 rounded-lg text-slate-400 hover:text-accent-blue hover:bg-blue-50 dark:hover:bg-red-900/20 transition-colors"><span className="material-symbols-outlined">edit</span></button>
-                                            <button onClick={() => handleDeleteProject(p.id)} className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"><span className="material-symbols-outlined">delete</span></button>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
+                            {projectsList.length === 0 ? (
+                                <div className="text-center py-20 text-slate-500 bg-surface-light dark:bg-surface-dark rounded-xl border border-dashed border-slate-300 dark:border-slate-700">尚未创建项目</div>
+                            ) : (
+                                <div className="flex flex-col gap-8">
+                                    {PROJECT_TYPE_ORDER.map(typeKey => {
+                                        const typeConfig = PROJECT_TYPE_CONFIG[typeKey];
+                                        const projectsOfType = projectsList.filter(p => p.type === typeKey);
+                                        if (projectsOfType.length === 0) return null;
+                                        return (
+                                            <div key={typeKey} className="flex flex-col gap-4">
+                                                <div className="flex items-center gap-3">
+                                                    <span className={`material-symbols-outlined ${typeConfig.color.split(' ')[1]}`} style={{ fontSize: '24px' }}>{typeConfig.icon}</span>
+                                                    <h4 className="text-lg font-bold text-slate-900 dark:text-white">{typeConfig.label}</h4>
+                                                    <span className="text-sm text-slate-500">({projectsOfType.length})</span>
+                                                </div>
+                                                <div className="grid grid-cols-1 gap-3">
+                                                    {projectsOfType.map(p => (
+                                                        <div key={p.id} className="rounded-xl bg-surface-light p-5 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                                                            <div className="flex-1">
+                                                                <div className="flex items-center gap-3 mb-1">
+                                                                    <h4 className="text-base font-bold text-slate-900 dark:text-white">{p.name}</h4>
+                                                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${typeConfig.color} ${typeConfig.darkColor}`}>{typeConfig.label}</span>
+                                                                </div>
+                                                                <p className="text-sm text-slate-500 line-clamp-1">{p.prompt}</p>
+                                                            </div>
+                                                            <div className="flex gap-3">
+                                                                <button onClick={() => {
+                                                                    if (p.type === 'coding_master') {
+                                                                        setActiveProject(p);
+                                                                        setDashView('project_detail');
+                                                                    } else if (p.type === 'local_workflow') {
+                                                                        handleExecuteWithOpencode(p);
+                                                                    } else {
+                                                                        handleOpenPublishDialog(p);
+                                                                    }
+                                                                }} className={`flex items-center gap-2 ${typeConfig.color} ${typeConfig.darkColor} px-4 py-2 rounded-lg text-sm font-bold transition-colors shadow-sm hover:opacity-80`}>
+                                                                    <span className="material-symbols-outlined" style={{ fontSize: "18px" }}>{typeConfig.icon}</span>
+                                                                    {p.type === 'coding_master' ? '进入工作台' : p.type === 'local_workflow' ? '执行' : '启动'}
+                                                                </button>
+                                                                <button onClick={() => handleOpenEditModal(p)} className="p-2 rounded-lg text-slate-400 hover:text-accent-blue hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"><span className="material-symbols-outlined">edit</span></button>
+                                                                <button onClick={() => handleDeleteProject(p.id)} className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"><span className="material-symbols-outlined">delete</span></button>
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -2265,6 +2480,113 @@ function App() {
                                     </div>
                                 </form>
                             </div>
+
+                            {/* Coding Master Settings */}
+                            <div className="rounded-2xl bg-surface-light p-8 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800">
+                                <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+                                    <span className="material-symbols-outlined text-orange-500">code</span>
+                                    Coding全能大师配置
+                                </h3>
+                                <form onSubmit={(e) => {
+                                    e.preventDefault();
+                                    handleUpdateSettings(e);
+                                }} className="flex flex-col gap-6">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        <div className="md:col-span-2">
+                                            <h4 className="text-sm font-semibold text-slate-900 dark:text-white mb-2 flex items-center gap-2">
+                                                <span className="size-2 rounded-full bg-orange-500"></span> 标准模式 (Coding任务模型 - 默认)
+                                            </h4>
+                                        </div>
+                                        <div>
+                                            <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Provider</label>
+                                            <select
+                                                className="custom-select w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-orange-500/20"
+                                                value={opencodeProvider}
+                                                onChange={(e) => setOpencodeProvider(e.target.value)}
+                                            >
+                                                <option value="anthropic">Anthropic</option>
+                                                <option value="openai">OpenAI</option>
+                                                <option value="google">Google</option>
+                                                <option value="minimax">MiniMax</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">API Key</label>
+                                            <input
+                                                type="password"
+                                                className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-orange-500/20"
+                                                placeholder="sk-..."
+                                                value={opencodeApiKey}
+                                                onChange={(e) => setOpencodeApiKey(e.target.value)}
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Model Name</label>
+                                            <input
+                                                type="text"
+                                                className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-orange-500/20"
+                                                placeholder="e.g. anthropic/claude-3-5-sonnet-20241022"
+                                                value={opencodeModel}
+                                                onChange={(e) => setOpencodeModel(e.target.value)}
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Small Model (轻量级任务)</label>
+                                            <input
+                                                type="text"
+                                                className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-orange-500/20"
+                                                placeholder="e.g. anthropic/claude-3-haiku-20240307"
+                                                value={opencodeSmallModel}
+                                                onChange={(e) => setOpencodeSmallModel(e.target.value)}
+                                            />
+                                        </div>
+                                        <div className="md:col-span-2 border-t border-slate-100 dark:border-slate-700 my-2"></div>
+                                        <div className="md:col-span-2">
+                                            <h4 className="text-sm font-semibold text-slate-900 dark:text-white mb-2 flex items-center gap-2">
+                                                <span className="size-2 rounded-full bg-purple-500"></span> 专家模式 (Coding任务模型 - 复杂)
+                                            </h4>
+                                        </div>
+                                        <div>
+                                            <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Provider</label>
+                                            <select
+                                                className="custom-select w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-purple-500/20"
+                                                value={ralphProvider}
+                                                onChange={(e) => setRalphProvider(e.target.value)}
+                                            >
+                                                <option value="anthropic">Anthropic</option>
+                                                <option value="openai">OpenAI</option>
+                                                <option value="google">Google</option>
+                                                <option value="minimax">MiniMax</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">API Key</label>
+                                            <input
+                                                type="password"
+                                                className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-purple-500/20"
+                                                placeholder="sk-..."
+                                                value={ralphApiKey}
+                                                onChange={(e) => setRalphApiKey(e.target.value)}
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">Model Name</label>
+                                            <input
+                                                type="text"
+                                                className="w-full rounded-xl border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white focus:ring-2 focus:ring-purple-500/20"
+                                                placeholder="e.g. claude-3-5-sonnet-20241022"
+                                                value={ralphModel || ""}
+                                                onChange={(e) => setRalphModel(e.target.value)}
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="flex justify-end">
+                                        <button type="submit" disabled={loading} className="bg-gradient-to-r from-orange-500 to-red-500 text-white px-8 py-2.5 rounded-xl text-sm font-bold shadow-lg hover:scale-[1.02] transition-transform">保存 Coding 配置</button>
+                                    </div>
+                                </form>
+                            </div>
+
+
 
                             {/* Local Workflow Settings */}
                             <div className="rounded-2xl bg-surface-light p-8 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800">
@@ -2515,6 +2837,15 @@ function App() {
                     {dashView === 'agent_studio' && (
                         <AgentStudio />
                     )}
+                    {dashView === 'mission_control' && (
+                        <CodingMasterDashboard onClose={() => setDashView('projects')} />
+                    )}
+                    {dashView === 'project_detail' && activeProject && (
+                        <CodingProjectWorkspace
+                            project={activeProject}
+                            onBack={() => setDashView('projects')}
+                        />
+                    )}
                 </div>
             </main>
 
@@ -2525,10 +2856,11 @@ function App() {
                         <div className="mb-6 flex items-center justify-between"><h3 className="text-xl font-bold text-slate-900 dark:text-white">{isEditing ? "修改自动化项目" : "新建自动化项目"}</h3><button onClick={() => setIsProjectModalOpen(false)} className="rounded-full p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"><span className="material-symbols-outlined">close</span></button></div>
                         <form onSubmit={handleSubmitProject} className="flex flex-col gap-4">
                             <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">项目名称</label><input type="text" className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" placeholder="例如：发布小红书笔记" value={projectName} onChange={(e) => setProjectName(e.target.value)} required /></div>
-                            <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">项目类型</label><div className="grid grid-cols-3 gap-3"><button type="button" onClick={() => setProjectType('workflow')} className={`p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${projectType === 'workflow' ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
-                            ><span className="text-sm font-bold text-slate-900 dark:text-white">自动工作流</span><span className="text-[10px] text-slate-500">浏览器自动化</span></button><button type="button" onClick={() => setProjectType('local_workflow')} className={`p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${projectType === 'local_workflow' ? 'border-green-500 bg-green-50 dark:bg-green-900/20' : 'border-slate-200 dark:border-slate-700'}`}
-                            ><span className="text-sm font-bold text-slate-900 dark:text-white">本地工作流</span><span className="text-[10px] text-slate-500">AI 代理执行本地任务</span></button><button type="button" onClick={() => { }} className={`p-3 rounded-lg border text-left flex flex-col gap-1 transition-all border-slate-200 dark:border-slate-700 opacity-50 cursor-not-allowed`}
-                            ><span className="text-sm font-bold text-slate-900 dark:text-white">网页抓取</span><span className="text-[10px] text-slate-500">提取结构化数据</span></button></div></div>
+                            <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">项目类型</label><div className="grid grid-cols-2 gap-3"><button type="button" onClick={() => setProjectType('coding_master')} className={`p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${projectType === 'coding_master' ? 'border-orange-500 bg-orange-50 dark:bg-orange-900/20' : 'border-slate-200 dark:border-slate-700'}`}
+                            ><div className="flex items-center gap-2"><span className="material-symbols-outlined text-orange-600" style={{ fontSize: '18px' }}>code</span><span className="text-sm font-bold text-slate-900 dark:text-white">Coding全能大师</span></div><span className="text-[10px] text-slate-500">AI 编程助手</span></button><button type="button" onClick={() => setProjectType('workflow')} className={`p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${projectType === 'workflow' ? 'border-accent-blue bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}
+                            ><div className="flex items-center gap-2"><span className="material-symbols-outlined text-purple-600" style={{ fontSize: '18px' }}>bolt</span><span className="text-sm font-bold text-slate-900 dark:text-white">自动工作流</span></div><span className="text-[10px] text-slate-500">浏览器自动化</span></button><button type="button" onClick={() => setProjectType('local_workflow')} className={`p-3 rounded-lg border text-left flex flex-col gap-1 transition-all ${projectType === 'local_workflow' ? 'border-green-500 bg-green-50 dark:bg-green-900/20' : 'border-slate-200 dark:border-slate-700'}`}
+                            ><div className="flex items-center gap-2"><span className="material-symbols-outlined text-green-600" style={{ fontSize: '18px' }}>terminal</span><span className="text-sm font-bold text-slate-900 dark:text-white">本地工作流</span></div><span className="text-[10px] text-slate-500">AI 代理执行本地任务</span></button><button type="button" onClick={() => { }} className={`p-3 rounded-lg border text-left flex flex-col gap-1 transition-all border-slate-200 dark:border-slate-700 opacity-50 cursor-not-allowed`}
+                            ><div className="flex items-center gap-2"><span className="material-symbols-outlined text-blue-600" style={{ fontSize: '18px' }}>download</span><span className="text-sm font-bold text-slate-900 dark:text-white">网页抓取</span></div><span className="text-[10px] text-slate-500">提取结构化数据</span></button></div></div>
                             {projectType === 'workflow' && <>
                                 <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">项目平台</label><div className="flex gap-4"><button type="button" className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all border-accent-blue bg-blue-50 dark:bg-blue-900/20`}
                                 ><div className="flex items-center gap-2"><img src="/src/assets/小红书.svg" alt="小红书" className="w-5 h-5" /><span className="text-sm font-bold text-slate-900 dark:text-white">小红书笔记</span></div><span className="text-[10px] text-slate-500">当前仅支持小红书</span></button><button type="button" className={`flex-1 p-3 rounded-lg border text-left flex flex-col gap-1 transition-all border-slate-200 dark:border-slate-700 opacity-50 cursor-not-allowed`}
@@ -2539,6 +2871,87 @@ function App() {
                                 {useAIRewrite && <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">AI 提示词 (Prompt) <span className="text-red-500">*</span></label><textarea className="w-full rounded-lg border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" rows={4} placeholder="描述需要自动完成的操作步骤..." value={projectPrompt} onChange={(e) => setProjectPrompt(e.target.value)} required /></div>}
                             </>}
                             {projectType === 'local_workflow' && <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">任务需求 <span className="text-red-500">*</span></label><textarea className="w-full rounded-lg border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" rows={4} placeholder="描述你的需求，例如：&#10;• 查询杭州今日天气并保存到 weather.xlsx&#10;• 抓取知乎热榜前 10 条保存为 JSON&#10;• 搜索 Python 教程并整理成文档" value={projectPrompt} onChange={(e) => setProjectPrompt(e.target.value)} required /></div>}
+                            {projectType === 'coding_master' && <>
+                                <div className="p-4 rounded-lg bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800">
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <span className="material-symbols-outlined text-orange-600" style={{ fontSize: '20px' }}>code</span>
+                                        <span className="text-sm font-bold text-orange-700 dark:text-orange-300">Coding全能大师</span>
+                                    </div>
+                                    <p className="text-xs text-orange-600 dark:text-orange-400">使用专家模式 (复杂任务) 和标准模式 (简单任务) 来完成编程工作。</p>
+                                </div>
+                                <div>
+                                    <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                                        PRD 文档 (可选) <span className="text-xs text-orange-500 font-normal">- 用于 AI 自动生成开发计划</span>
+                                    </label>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
+                                            placeholder="选择需求文档 (.md/.txt)..."
+                                            value={prdFilePath}
+                                            readOnly
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={async () => {
+                                                try {
+                                                    const selected = await open({
+                                                        filters: [{
+                                                            name: 'Markdown/Text',
+                                                            extensions: ['md', 'txt']
+                                                        }],
+                                                        multiple: false,
+                                                        title: '选择 PRD 文档'
+                                                    });
+                                                    if (selected) {
+                                                        setPrdFilePath(selected as string);
+                                                    }
+                                                } catch (err) {
+                                                    console.error("Failed to open dialog:", err);
+                                                }
+                                            }}
+                                            className="px-3 py-2 bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
+                                        >
+                                            <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>article</span>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">项目路径 <span className="text-red-500">*</span></label>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            className="w-full rounded-lg border border-slate-300 bg-slate-50 p-2.5 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white"
+                                            placeholder="请选择项目根目录"
+                                            value={projectUrl}
+                                            onChange={(e) => setProjectUrl(e.target.value)}
+                                            required
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={async () => {
+                                                try {
+                                                    const selected = await open({
+                                                        directory: true,
+                                                        multiple: false,
+                                                        title: '选择项目根目录'
+                                                    });
+                                                    if (selected) {
+                                                        setProjectUrl(selected as string);
+                                                    }
+                                                } catch (err) {
+                                                    console.error("Failed to open dialog:", err);
+                                                }
+                                            }}
+                                            className="px-3 py-2 bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
+                                        >
+                                            <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>folder_open</span>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div><label className="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">编程任务描述 <span className="text-red-500">*</span></label><textarea className="w-full rounded-lg border border-slate-300 bg-slate-50 p-3 text-sm dark:bg-slate-800 dark:border-slate-700 text-slate-900 dark:text-white" rows={4} placeholder="描述你的编程需求，例如：&#10;• 添加用户登录功能&#10;• 重构 API 模块&#10;• 修复分页 Bug" value={projectPrompt} onChange={(e) => setProjectPrompt(e.target.value)} required /></div>
+                            </>}
                             <div className="flex items-center gap-2 p-3 rounded-lg bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800">
                                 <span className="material-symbols-outlined text-purple-600" style={{ fontSize: "18px" }}>auto_awesome</span>
                                 <span className="text-xs text-purple-700 dark:text-purple-300">AI有时候会犯错，请认真甄别</span>
@@ -2547,294 +2960,301 @@ function App() {
                         </form>
                     </div>
                 </div>
-            )}
+            )
+            }
 
             {/* Global Alert/Confirm Modal */}
-            {globalModal.isOpen && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div className="w-full max-sm:max-w-xs max-w-sm rounded-2xl bg-surface-light dark:bg-surface-dark p-6 shadow-2xl border border-slate-200 dark:border-slate-800 scale-100 animate-in zoom-in-95 duration-200">
-                        <div className="flex flex-col items-center text-center gap-4">
-                            <img src="/logo-v2-1.png" alt="Logo" className="w-16 h-16 object-contain mb-2" />
-                            <div>
-                                <h3 className="text-lg font-bold text-slate-900 dark:text-white">{globalModal.title}</h3>
-                                <p className="mt-2 text-sm text-slate-500 dark:text-slate-400 leading-relaxed">{globalModal.message}</p>
-                            </div>
-                            <div className="mt-2 flex w-full gap-3">
-                                {globalModal.type === 'confirm' && (
-                                    <button
-                                        onClick={closeModal}
-                                        className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-sm font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-                                    >
-                                        取消
-                                    </button>
-                                )}
-                                <button
-                                    onClick={globalModal.type === 'confirm' ? globalModal.onConfirm : closeModal}
-                                    className="flex-1 px-4 py-2.5 rounded-xl text-white text-sm font-bold shadow-lg transition-all active:scale-95 bg-gradient-primary hover:opacity-90"
-                                >
-                                    {globalModal.type === 'confirm' ? globalModal.confirmText : "好的"}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* Publish Dialog */}
-            {isPublishDialogOpen && publishDialogProject && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div className="w-full max-w-lg rounded-xl bg-surface-light dark:bg-surface-dark p-6 shadow-2xl border border-slate-200 dark:border-slate-800 max-h-[80vh] overflow-y-auto animate-in zoom-in-95 duration-200">
-                        <div className="flex items-center justify-between mb-6">
-                            <h3 className="text-xl font-bold text-slate-900 dark:text-white">发布素材</h3>
-                            <button onClick={() => setIsPublishDialogOpen(false)} className="p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors">
-                                <span className="material-symbols-outlined">close</span>
-                            </button>
-                        </div>
-
-                        {/* Project info */}
-                        <div className="mb-4 p-3 bg-slate-50 dark:bg-slate-800 rounded-lg">
-                            <p className="text-sm font-medium text-slate-900 dark:text-white">{publishDialogProject.name}</p>
-                            <p className="text-xs text-slate-500">关联素材: {publishMaterials.length} 个</p>
-                        </div>
-
-                        {/* AI Rewrite Status */}
-                        <div className={`mb-4 p-3 rounded-lg flex items-center gap-2 ${(publishDialogProject as any).useAIRewrite ? 'bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800' : 'bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700'}`}>
-                            <span className={`material-symbols-outlined ${(publishDialogProject as any).useAIRewrite ? 'text-purple-600' : 'text-slate-400'}`} style={{ fontSize: '18px' }}>
-                                {(publishDialogProject as any).useAIRewrite ? 'auto_awesome' : 'edit_off'}
-                            </span>
-                            <div>
-                                <p className={`text-sm font-medium ${(publishDialogProject as any).useAIRewrite ? 'text-purple-700 dark:text-purple-400' : 'text-slate-600 dark:text-slate-400'}`}>
-                                    {(publishDialogProject as any).useAIRewrite ? 'AI 改写已启用' : 'AI 改写未启用'}
-                                </p>
-                                <p className="text-xs text-slate-500">
-                                    {(publishDialogProject as any).useAIRewrite ? '发布前将使用 AI 改写素材内容' : '将直接使用原始素材内容发布'}
-                                </p>
-                                {(publishDialogProject as any).useAIRewrite && (publishDialogProject as any).prompt && (
-                                    <div className="mt-2 text-xs bg-white dark:bg-slate-900/50 p-2 rounded border border-purple-100 dark:border-purple-800/50 text-slate-600 dark:text-slate-400">
-                                        <span className="font-bold text-purple-600 dark:text-purple-400 block mb-0.5">Prompt:</span>
-                                        {(publishDialogProject as any).prompt}
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-
-                        {/* Mode selection */}
-                        <div className="mb-4">
-                            <label className="text-sm font-medium mb-2 block text-slate-700 dark:text-slate-300">发布方式</label>
-                            <div className="flex gap-4">
-                                <button onClick={() => setPublishMode('select')}
-                                    className={`flex-1 p-3 rounded-lg border text-left transition-all ${publishMode === 'select' ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}>
-                                    <span className="text-sm font-medium text-slate-900 dark:text-white">选择发布</span>
-                                    <p className="text-xs text-slate-500 mt-1">手动选择要发布的素材</p>
-                                </button>
-                                <button onClick={() => setPublishMode('random')}
-                                    className={`flex-1 p-3 rounded-lg border text-left transition-all ${publishMode === 'random' ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}>
-                                    <span className="text-sm font-medium text-slate-900 dark:text-white">随机发布</span>
-                                    <p className="text-xs text-slate-500 mt-1">随机选择指定数量发布</p>
-                                </button>
-                            </div>
-                        </div>
-
-                        {/* Select mode - material list */}
-                        {publishMode === 'select' && (
-                            <div className="mb-4 max-h-48 overflow-y-auto border border-slate-200 dark:border-slate-700 rounded-lg">
-                                {publishMaterials.length === 0 ? (
-                                    <p className="p-4 text-center text-slate-500 text-sm">暂无关联素材</p>
-                                ) : publishMaterials.map(m => (
-                                    <label key={m.id} className="flex items-center gap-3 p-3 border-b border-slate-100 dark:border-slate-800 last:border-b-0 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer transition-colors">
-                                        <input type="checkbox" checked={selectedMaterialIds.includes(m.id)}
-                                            onChange={(e) => {
-                                                if (e.target.checked) {
-                                                    setSelectedMaterialIds([...selectedMaterialIds, m.id]);
-                                                } else {
-                                                    setSelectedMaterialIds(selectedMaterialIds.filter(id => id !== m.id));
-                                                }
-                                            }}
-                                            className="h-4 w-4 rounded text-blue-600"
-                                        />
-                                        <span className="text-sm truncate text-slate-900 dark:text-white">{m.name}</span>
-                                    </label>
-                                ))}
-                            </div>
-                        )}
-
-                        {/* Random mode - count input */}
-                        {publishMode === 'random' && (
-                            <div className="mb-4">
-                                <label className="text-sm font-medium mb-2 block text-slate-700 dark:text-slate-300">发布数量</label>
-                                <input type="number" min={1} max={publishMaterials.length || 1}
-                                    value={randomPublishCount}
-                                    onChange={(e) => setRandomPublishCount(Math.max(1, parseInt(e.target.value) || 1))}
-                                    className="w-full p-2.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
-                                />
-                                <p className="text-xs text-slate-500 mt-1">最多可发布 {publishMaterials.length} 个素材</p>
-                            </div>
-                        )}
-
-                        {/* Actions */}
-                        <div className="flex gap-3 mt-6">
-                            <button onClick={() => setIsPublishDialogOpen(false)}
-                                className="flex-1 px-4 py-2.5 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-600 dark:text-slate-300 font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">取消</button>
-                            <button onClick={handlePublishWithMaterial} disabled={publishLoading || (publishMode === 'select' && selectedMaterialIds.length === 0)}
-                                className="flex-1 px-4 py-2.5 bg-gradient-primary text-white rounded-lg font-medium disabled:opacity-50 shadow-lg">
-                                {publishLoading ? '发布中...' : '开始发布'}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* AI Workflow Dialog */}
-            {isAIWorkflowDialogOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div className="w-full max-w-4xl h-[85vh] rounded-xl bg-surface-light dark:bg-surface-dark shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col animate-in zoom-in-95 duration-200">
-                        {/* Header */}
-                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800">
-                            <div className="flex items-center gap-3">
-                                <img src="/logo-v2-1.png" alt="Logo" className="w-10 h-10 object-contain" />
+            {
+                globalModal.isOpen && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                        <div className="w-full max-sm:max-w-xs max-w-sm rounded-2xl bg-surface-light dark:bg-surface-dark p-6 shadow-2xl border border-slate-200 dark:border-slate-800 scale-100 animate-in zoom-in-95 duration-200">
+                            <div className="flex flex-col items-center text-center gap-4">
+                                <img src="/logo-v2-1.png" alt="Logo" className="w-16 h-16 object-contain mb-2" />
                                 <div>
-                                    <h3 className="text-lg font-bold text-slate-900 dark:text-white">AI 工作流生成</h3>
-                                    <p className="text-xs text-slate-500">{aiWorkflowProject?.name}</p>
+                                    <h3 className="text-lg font-bold text-slate-900 dark:text-white">{globalModal.title}</h3>
+                                    <p className="mt-2 text-sm text-slate-500 dark:text-slate-400 leading-relaxed">{globalModal.message}</p>
+                                </div>
+                                <div className="mt-2 flex w-full gap-3">
+                                    {globalModal.type === 'confirm' && (
+                                        <button
+                                            onClick={closeModal}
+                                            className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-sm font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                                        >
+                                            取消
+                                        </button>
+                                    )}
+                                    <button
+                                        onClick={globalModal.type === 'confirm' ? globalModal.onConfirm : closeModal}
+                                        className="flex-1 px-4 py-2.5 rounded-xl text-white text-sm font-bold shadow-lg transition-all active:scale-95 bg-gradient-primary hover:opacity-90"
+                                    >
+                                        {globalModal.type === 'confirm' ? globalModal.confirmText : "好的"}
+                                    </button>
                                 </div>
                             </div>
-                            <div className="flex items-center gap-2">
-                                {aiGeneratedPrompt && aiHasStructuredSteps && !aiDialogLoading && (
-                                    <button
-                                        onClick={handleExecuteWorkflow}
-                                        disabled={aiWorkflowExecuting}
-                                        className="flex items-center gap-2 bg-gradient-primary text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg transition-all hover:opacity-90 disabled:opacity-50"
-                                    >
-                                        <span className="material-symbols-outlined" style={{ fontSize: "18px" }}>{aiWorkflowExecuting ? 'sync' : 'play_arrow'}</span>
-                                        执行工作流
-                                    </button>
-                                )}
-                                <button onClick={handleCloseAIWorkflowDialog} className="rounded-full p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+                        </div>
+                    </div>
+                )
+            }
+
+            {/* Publish Dialog */}
+            {
+                isPublishDialogOpen && publishDialogProject && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                        <div className="w-full max-w-lg rounded-xl bg-surface-light dark:bg-surface-dark p-6 shadow-2xl border border-slate-200 dark:border-slate-800 max-h-[80vh] overflow-y-auto animate-in zoom-in-95 duration-200">
+                            <div className="flex items-center justify-between mb-6">
+                                <h3 className="text-xl font-bold text-slate-900 dark:text-white">发布素材</h3>
+                                <button onClick={() => setIsPublishDialogOpen(false)} className="p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors">
                                     <span className="material-symbols-outlined">close</span>
                                 </button>
                             </div>
-                        </div>
 
-                        {/* Messages Container */}
-                        <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-4">
-                            {aiDialogMessages.map((msg, idx) => (
-                                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                    <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${msg.role === 'user'
-                                        ? 'bg-blue-600 text-white'
-                                        : msg.role === 'system'
-                                            ? 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-sm italic'
-                                            : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white'
-                                        }`}>
-                                        {msg.role === 'assistant' && (
-                                            <div className="flex items-center gap-2 mb-2">
-                                                <span className="material-symbols-outlined text-purple-500" style={{ fontSize: "16px" }}>smart_toy</span>
-                                                <span className="text-xs font-bold text-purple-500">AI 助手</span>
-                                            </div>
-                                        )}
-                                        <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.content}</p>
-                                    </div>
-                                </div>
-                            ))}
-
-                            {/* Loading Indicator */}
-                            {aiDialogLoading && (
-                                <div className="flex justify-start">
-                                    <div className="bg-slate-100 dark:bg-slate-800 rounded-2xl px-4 py-3 flex items-center gap-2">
-                                        <div className="flex gap-1">
-                                            <div className="size-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                                            <div className="size-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                                            <div className="size-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: '300ms' }}></div>
-                                        </div>
-                                        <span className="text-sm text-slate-500">AI 正在思考...</span>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* Workflow Steps Preview */}
-                            {aiWorkflowSteps.length > 0 && (
-                                <div className="bg-purple-50 dark:bg-purple-900/20 rounded-xl p-4 border border-purple-200 dark:border-purple-800">
-                                    <div className="flex items-center gap-2 mb-3">
-                                        <span className="material-symbols-outlined text-purple-600" style={{ fontSize: "18px" }}>list_alt</span>
-                                        <span className="text-sm font-bold text-purple-700 dark:text-purple-400">工作流步骤预览</span>
-                                    </div>
-                                    <div className="flex flex-col gap-2">
-                                        {aiWorkflowSteps.map((step, idx) => (
-                                            <div key={idx} className="flex items-start gap-3 text-sm">
-                                                <span className="flex-shrink-0 size-6 rounded-full bg-purple-200 dark:bg-purple-800 text-purple-700 dark:text-purple-300 flex items-center justify-center text-xs font-bold">{step.idx || idx + 1}</span>
-                                                <div>
-                                                    <span className="font-medium text-slate-900 dark:text-white">{step.action}</span>
-                                                    <p className="text-slate-500 text-xs mt-0.5">{step.description}</p>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* Execution Logs Panel */}
-                            {aiWorkflowLogs.length > 0 && (
-                                <div className="bg-slate-900 dark:bg-slate-950 rounded-xl p-4 border border-slate-700">
-                                    <div className="flex items-center justify-between mb-2">
-                                        <div className="flex items-center gap-2">
-                                            <span className="material-symbols-outlined text-green-500" style={{ fontSize: "18px" }}>terminal</span>
-                                            <span className="text-sm font-bold text-slate-300">执行日志</span>
-                                        </div>
-                                        <span className="text-xs text-slate-500">{aiWorkflowLogs.length} 条</span>
-                                    </div>
-                                    <div className="max-h-40 overflow-y-auto font-mono text-xs text-slate-400 space-y-1">
-                                        {aiWorkflowLogs.slice(-20).map((log, idx) => (
-                                            <div key={idx} className={`${log.includes('[Error]') ? 'text-red-400' : log.includes('[System]') ? 'text-blue-400' : log.includes('[Warning]') ? 'text-yellow-400' : ''}`}>
-                                                {log}
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Input Area */}
-                        <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-800">
-                            <div className="flex gap-3">
-                                <input
-                                    type="text"
-                                    value={aiUserInput}
-                                    onChange={(e) => setAIUserInput(e.target.value)}
-                                    onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleAISendMessage()}
-                                    placeholder="输入您的反馈或修改建议..."
-                                    disabled={aiDialogLoading}
-                                    className="flex-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-4 py-2.5 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50"
-                                />
-                                <button
-                                    onClick={handleAISendMessage}
-                                    disabled={aiDialogLoading || !aiUserInput.trim()}
-                                    className="px-4 py-2.5 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-sm font-medium hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors disabled:opacity-50"
-                                >
-                                    <span className="material-symbols-outlined" style={{ fontSize: "18px" }}>send</span>
-                                </button>
+                            {/* Project info */}
+                            <div className="mb-4 p-3 bg-slate-50 dark:bg-slate-800 rounded-lg">
+                                <p className="text-sm font-medium text-slate-900 dark:text-white">{publishDialogProject.name}</p>
+                                <p className="text-xs text-slate-500">关联素材: {publishMaterials.length} 个</p>
                             </div>
 
-                            {/* Action Buttons */}
-                            {aiGeneratedPrompt && !aiDialogLoading && (
-                                <div className="flex justify-end gap-3 mt-4">
-                                    <button
-                                        onClick={handleCloseAIWorkflowDialog}
-                                        className="px-4 py-2 text-sm font-medium text-slate-500 hover:text-slate-700 transition-colors"
-                                    >
-                                        取消
+                            {/* AI Rewrite Status */}
+                            <div className={`mb-4 p-3 rounded-lg flex items-center gap-2 ${(publishDialogProject as any).useAIRewrite ? 'bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800' : 'bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700'}`}>
+                                <span className={`material-symbols-outlined ${(publishDialogProject as any).useAIRewrite ? 'text-purple-600' : 'text-slate-400'}`} style={{ fontSize: '18px' }}>
+                                    {(publishDialogProject as any).useAIRewrite ? 'auto_awesome' : 'edit_off'}
+                                </span>
+                                <div>
+                                    <p className={`text-sm font-medium ${(publishDialogProject as any).useAIRewrite ? 'text-purple-700 dark:text-purple-400' : 'text-slate-600 dark:text-slate-400'}`}>
+                                        {(publishDialogProject as any).useAIRewrite ? 'AI 改写已启用' : 'AI 改写未启用'}
+                                    </p>
+                                    <p className="text-xs text-slate-500">
+                                        {(publishDialogProject as any).useAIRewrite ? '发布前将使用 AI 改写素材内容' : '将直接使用原始素材内容发布'}
+                                    </p>
+                                    {(publishDialogProject as any).useAIRewrite && (publishDialogProject as any).prompt && (
+                                        <div className="mt-2 text-xs bg-white dark:bg-slate-900/50 p-2 rounded border border-purple-100 dark:border-purple-800/50 text-slate-600 dark:text-slate-400">
+                                            <span className="font-bold text-purple-600 dark:text-purple-400 block mb-0.5">Prompt:</span>
+                                            {(publishDialogProject as any).prompt}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Mode selection */}
+                            <div className="mb-4">
+                                <label className="text-sm font-medium mb-2 block text-slate-700 dark:text-slate-300">发布方式</label>
+                                <div className="flex gap-4">
+                                    <button onClick={() => setPublishMode('select')}
+                                        className={`flex-1 p-3 rounded-lg border text-left transition-all ${publishMode === 'select' ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}>
+                                        <span className="text-sm font-medium text-slate-900 dark:text-white">选择发布</span>
+                                        <p className="text-xs text-slate-500 mt-1">手动选择要发布的素材</p>
                                     </button>
-                                    <button
-                                        onClick={handleAIConfirmWorkflow}
-                                        className="px-6 py-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-lg text-sm font-bold hover:from-purple-700 hover:to-pink-700 transition-all shadow-lg flex items-center gap-2"
-                                    >
-                                        <span className="material-symbols-outlined" style={{ fontSize: "16px" }}>check_circle</span>
-                                        确认并保存工作流
+                                    <button onClick={() => setPublishMode('random')}
+                                        className={`flex-1 p-3 rounded-lg border text-left transition-all ${publishMode === 'random' ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-slate-200 dark:border-slate-700'}`}>
+                                        <span className="text-sm font-medium text-slate-900 dark:text-white">随机发布</span>
+                                        <p className="text-xs text-slate-500 mt-1">随机选择指定数量发布</p>
                                     </button>
                                 </div>
+                            </div>
+
+                            {/* Select mode - material list */}
+                            {publishMode === 'select' && (
+                                <div className="mb-4 max-h-48 overflow-y-auto border border-slate-200 dark:border-slate-700 rounded-lg">
+                                    {publishMaterials.length === 0 ? (
+                                        <p className="p-4 text-center text-slate-500 text-sm">暂无关联素材</p>
+                                    ) : publishMaterials.map(m => (
+                                        <label key={m.id} className="flex items-center gap-3 p-3 border-b border-slate-100 dark:border-slate-800 last:border-b-0 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer transition-colors">
+                                            <input type="checkbox" checked={selectedMaterialIds.includes(m.id)}
+                                                onChange={(e) => {
+                                                    if (e.target.checked) {
+                                                        setSelectedMaterialIds([...selectedMaterialIds, m.id]);
+                                                    } else {
+                                                        setSelectedMaterialIds(selectedMaterialIds.filter(id => id !== m.id));
+                                                    }
+                                                }}
+                                                className="h-4 w-4 rounded text-blue-600"
+                                            />
+                                            <span className="text-sm truncate text-slate-900 dark:text-white">{m.name}</span>
+                                        </label>
+                                    ))}
+                                </div>
                             )}
+
+                            {/* Random mode - count input */}
+                            {publishMode === 'random' && (
+                                <div className="mb-4">
+                                    <label className="text-sm font-medium mb-2 block text-slate-700 dark:text-slate-300">发布数量</label>
+                                    <input type="number" min={1} max={publishMaterials.length || 1}
+                                        value={randomPublishCount}
+                                        onChange={(e) => setRandomPublishCount(Math.max(1, parseInt(e.target.value) || 1))}
+                                        className="w-full p-2.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                                    />
+                                    <p className="text-xs text-slate-500 mt-1">最多可发布 {publishMaterials.length} 个素材</p>
+                                </div>
+                            )}
+
+                            {/* Actions */}
+                            <div className="flex gap-3 mt-6">
+                                <button onClick={() => setIsPublishDialogOpen(false)}
+                                    className="flex-1 px-4 py-2.5 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-600 dark:text-slate-300 font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">取消</button>
+                                <button onClick={handlePublishWithMaterial} disabled={publishLoading || (publishMode === 'select' && selectedMaterialIds.length === 0)}
+                                    className="flex-1 px-4 py-2.5 bg-gradient-primary text-white rounded-lg font-medium disabled:opacity-50 shadow-lg">
+                                    {publishLoading ? '发布中...' : '开始发布'}
+                                </button>
+                            </div>
                         </div>
                     </div>
-                </div>
-            )}
-        </div>
+                )
+            }
+
+            {/* AI Workflow Dialog */}
+            {
+                isAIWorkflowDialogOpen && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                        <div className="w-full max-w-4xl h-[85vh] rounded-xl bg-surface-light dark:bg-surface-dark shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col animate-in zoom-in-95 duration-200">
+                            {/* Header */}
+                            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800">
+                                <div className="flex items-center gap-3">
+                                    <img src="/logo-v2-1.png" alt="Logo" className="w-10 h-10 object-contain" />
+                                    <div>
+                                        <h3 className="text-lg font-bold text-slate-900 dark:text-white">AI 工作流生成</h3>
+                                        <p className="text-xs text-slate-500">{aiWorkflowProject?.name}</p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    {aiGeneratedPrompt && aiHasStructuredSteps && !aiDialogLoading && (
+                                        <button
+                                            onClick={handleExecuteWorkflow}
+                                            disabled={aiWorkflowExecuting}
+                                            className="flex items-center gap-2 bg-gradient-primary text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg transition-all hover:opacity-90 disabled:opacity-50"
+                                        >
+                                            <span className="material-symbols-outlined" style={{ fontSize: "18px" }}>{aiWorkflowExecuting ? 'sync' : 'play_arrow'}</span>
+                                            执行工作流
+                                        </button>
+                                    )}
+                                    <button onClick={handleCloseAIWorkflowDialog} className="rounded-full p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+                                        <span className="material-symbols-outlined">close</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Messages Container */}
+                            <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-4">
+                                {aiDialogMessages.map((msg, idx) => (
+                                    <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                        <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${msg.role === 'user'
+                                            ? 'bg-blue-600 text-white'
+                                            : msg.role === 'system'
+                                                ? 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-sm italic'
+                                                : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white'
+                                            }`}>
+                                            {msg.role === 'assistant' && (
+                                                <div className="flex items-center gap-2 mb-2">
+                                                    <span className="material-symbols-outlined text-purple-500" style={{ fontSize: "16px" }}>smart_toy</span>
+                                                    <span className="text-xs font-bold text-purple-500">AI 助手</span>
+                                                </div>
+                                            )}
+                                            <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                                        </div>
+                                    </div>
+                                ))}
+
+                                {/* Loading Indicator */}
+                                {aiDialogLoading && (
+                                    <div className="flex justify-start">
+                                        <div className="bg-slate-100 dark:bg-slate-800 rounded-2xl px-4 py-3 flex items-center gap-2">
+                                            <div className="flex gap-1">
+                                                <div className="size-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                                                <div className="size-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                                                <div className="size-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                                            </div>
+                                            <span className="text-sm text-slate-500">AI 正在思考...</span>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Workflow Steps Preview */}
+                                {aiWorkflowSteps.length > 0 && (
+                                    <div className="bg-purple-50 dark:bg-purple-900/20 rounded-xl p-4 border border-purple-200 dark:border-purple-800">
+                                        <div className="flex items-center gap-2 mb-3">
+                                            <span className="material-symbols-outlined text-purple-600" style={{ fontSize: "18px" }}>list_alt</span>
+                                            <span className="text-sm font-bold text-purple-700 dark:text-purple-400">工作流步骤预览</span>
+                                        </div>
+                                        <div className="flex flex-col gap-2">
+                                            {aiWorkflowSteps.map((step, idx) => (
+                                                <div key={idx} className="flex items-start gap-3 text-sm">
+                                                    <span className="flex-shrink-0 size-6 rounded-full bg-purple-200 dark:bg-purple-800 text-purple-700 dark:text-purple-300 flex items-center justify-center text-xs font-bold">{step.idx || idx + 1}</span>
+                                                    <div>
+                                                        <span className="font-medium text-slate-900 dark:text-white">{step.action}</span>
+                                                        <p className="text-slate-500 text-xs mt-0.5">{step.description}</p>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Execution Logs Panel */}
+                                {aiWorkflowLogs.length > 0 && (
+                                    <div className="bg-slate-900 dark:bg-slate-950 rounded-xl p-4 border border-slate-700">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <div className="flex items-center gap-2">
+                                                <span className="material-symbols-outlined text-green-500" style={{ fontSize: "18px" }}>terminal</span>
+                                                <span className="text-sm font-bold text-slate-300">执行日志</span>
+                                            </div>
+                                            <span className="text-xs text-slate-500">{aiWorkflowLogs.length} 条</span>
+                                        </div>
+                                        <div className="max-h-40 overflow-y-auto font-mono text-xs text-slate-400 space-y-1">
+                                            {aiWorkflowLogs.slice(-20).map((log, idx) => (
+                                                <div key={idx} className={`${log.includes('[Error]') ? 'text-red-400' : log.includes('[System]') ? 'text-blue-400' : log.includes('[Warning]') ? 'text-yellow-400' : ''}`}>
+                                                    {log}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Input Area */}
+                            <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-800">
+                                <div className="flex gap-3">
+                                    <input
+                                        type="text"
+                                        value={aiUserInput}
+                                        onChange={(e) => setAIUserInput(e.target.value)}
+                                        onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleAISendMessage()}
+                                        placeholder="输入您的反馈或修改建议..."
+                                        disabled={aiDialogLoading}
+                                        className="flex-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-4 py-2.5 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50"
+                                    />
+                                    <button
+                                        onClick={handleAISendMessage}
+                                        disabled={aiDialogLoading || !aiUserInput.trim()}
+                                        className="px-4 py-2.5 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-sm font-medium hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors disabled:opacity-50"
+                                    >
+                                        <span className="material-symbols-outlined" style={{ fontSize: "18px" }}>send</span>
+                                    </button>
+                                </div>
+
+                                {/* Action Buttons */}
+                                {aiGeneratedPrompt && !aiDialogLoading && (
+                                    <div className="flex justify-end gap-3 mt-4">
+                                        <button
+                                            onClick={handleCloseAIWorkflowDialog}
+                                            className="px-4 py-2 text-sm font-medium text-slate-500 hover:text-slate-700 transition-colors"
+                                        >
+                                            取消
+                                        </button>
+                                        <button
+                                            onClick={handleAIConfirmWorkflow}
+                                            className="px-6 py-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-lg text-sm font-bold hover:from-purple-700 hover:to-pink-700 transition-all shadow-lg flex items-center gap-2"
+                                        >
+                                            <span className="material-symbols-outlined" style={{ fontSize: "16px" }}>check_circle</span>
+                                            确认并保存工作流
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
+        </div >
     );
 }
 

@@ -1,4 +1,17 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "opencode/minimax-m2.1-free"
+  "provider": {
+    "minimax": {
+      "npm": "@ai-sdk/anthropic",
+      "options": {
+        "baseURL": "https://api.minimaxi.com/anthropic/v1",
+        "apiKey": "sk-cp-48Fd8crHclmqH4YOWqGnsmbx1Aajw_oiGWBJ6Ztr9XVSQFWq3UiQZH9WuLXMFsOy1Nit3t4k45ipu0Ftwg7Fgu_S9J9qw3E-kEM-X-9j4AhwQ8ZYmz18J8g"
+      },
+      "models": {
+        "MiniMax-M2.1": {
+          "name": "MiniMax-M2.1"
+        }
+      }
+    }
+  }
 }
