@@ -25,6 +25,14 @@ interface DevelopmentProgress {
     steps: DevelopmentStep[];
 }
 
+interface TaskStatus {
+    status: 'pending' | 'running' | 'completed' | 'failed';
+    progress: number;
+    message: string;
+    dev_plan: string;
+    test_plan: string;
+}
+
 interface CodingProjectWorkspaceProps {
     project: Project;
     onBack: () => void;
@@ -39,18 +47,121 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
     const [prdContent, setPrdContent] = useState("");
     const [prdFilePath, setPrdFilePath] = useState("");
     const [progress, setProgress] = useState<DevelopmentProgress | null>(null);
+    const [devPlanModified, setDevPlanModified] = useState(false);
+    const [testPlanModified, setTestPlanModified] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
+    const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null);
 
     // Execution State
     const [executing, setExecuting] = useState(false);
     const [logs, setLogs] = useState<string[]>([]);
     const logsEndRef = useRef<HTMLDivElement>(null);
 
+    // Load saved plans and check task status on mount
     useEffect(() => {
         if (project.prompt) {
             setPrdContent(project.prompt);
         }
+        loadSavedPlans();
         loadProgress();
+        checkTaskStatus();
     }, [project]);
+
+    // Poll task status when analyzing
+    useEffect(() => {
+        let interval: any;
+        if (analyzing && taskStatus?.status === 'running') {
+            interval = setInterval(() => {
+                pollTaskStatus();
+            }, 2000);
+        }
+        return () => {
+            if (interval) clearInterval(interval);
+        };
+    }, [analyzing, taskStatus]);
+
+    const checkTaskStatus = useCallback(async () => {
+        try {
+            const result = await invoke('get_task_status', { projectPath: project.url });
+            if (result) {
+                const task = result as TaskStatus;
+                setTaskStatus(task);
+                if (task.dev_plan) setDevPlan(task.dev_plan);
+                if (task.test_plan) setTestPlan(task.test_plan);
+                if (task.status === 'completed') {
+                    setAnalyzing(false);
+                    loadProgress();
+                }
+            }
+        } catch (e) {
+            console.log("No task status found");
+        }
+    }, [project.url]);
+
+    const pollTaskStatus = useCallback(async () => {
+        try {
+            const result = await invoke('get_task_status', { projectPath: project.url });
+            if (result) {
+                const task = result as TaskStatus;
+                setTaskStatus(prev => {
+                    if (prev?.message !== task.message) {
+                        setLogs(l => [...l, `[系统] ${task.message}`]);
+                    }
+                    return task;
+                });
+                if (task.dev_plan) setDevPlan(task.dev_plan);
+                if (task.test_plan) setTestPlan(task.test_plan);
+                if (task.status === 'completed' || task.status === 'failed') {
+                    setAnalyzing(false);
+                    loadProgress();
+                }
+            }
+        } catch (e) {
+            console.log("Poll task status failed:", e);
+        }
+    }, [project.url]);
+
+    const loadSavedPlans = useCallback(async () => {
+        try {
+            const devResult = await invoke('read_plan_file', { projectPath: project.url, fileName: 'develop_plan.md' });
+            setDevPlan(devResult as string);
+        } catch (e) {
+            console.log("No saved dev plan found");
+        }
+
+        try {
+            const testResult = await invoke('read_plan_file', { projectPath: project.url, fileName: 'testing_plan.md' });
+            setTestPlan(testResult as string);
+        } catch (e) {
+            console.log("No saved test plan found");
+        }
+    }, [project.url]);
+
+    const handleSaveDevPlan = async () => {
+        setIsSaving(true);
+        try {
+            await invoke('save_plan_file', { content: devPlan, projectPath: project.url, fileName: 'develop_plan.md' });
+            setDevPlanModified(false);
+            setLogs(prev => [...prev, "[系统] 开发计划已保存"]);
+        } catch (e) {
+            setLogs(prev => [...prev, `[错误] 保存开发计划失败: ${JSON.stringify(e)}`]);
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    const handleSaveTestPlan = async () => {
+        setIsSaving(true);
+        try {
+            await invoke('save_plan_file', { content: testPlan, projectPath: project.url, fileName: 'testing_plan.md' });
+            setTestPlanModified(false);
+            setLogs(prev => [...prev, "[系统] 测试计划已保存"]);
+        } catch (e) {
+            setLogs(prev => [...prev, `[错误] 保存测试计划失败: ${JSON.stringify(e)}`]);
+        } finally {
+            setIsSaving(false);
+        }
+    };
 
     const loadProgress = useCallback(async () => {
         try {
@@ -64,40 +175,19 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
 
     const handleAnalyze = async () => {
         setAnalyzing(true);
-        setLogs(prev => [...prev, "[系统] 开始分析需求..."]);
+        setLogs(prev => [...prev, "[系统] 开始在后台分析需求..."]);
         setActiveTab('code');
 
         try {
-            const opencode = await import('../opencodeService');
-            const isHealthy = await opencode.checkHealth();
-            if (!isHealthy) {
-                throw new Error('OpenCode 服务器不可用');
-            }
-
-            const devSession = await opencode.createSession(`DevPlan: ${project.name}`);
-            const devPrompt = `请生成 develop_plan.md。格式：### Step N: 标题\n具体内容。直接输出内容。需求: ${prdContent || project.prompt}`;
-            const devResponse = await opencode.sendMessage(devSession.id, devPrompt);
-            const finalDevPlan = devResponse.parts?.filter(p => p.type === 'text' && p.text).map(p => p.text).join('\n') || "";
-            setDevPlan(finalDevPlan);
-
-            await invoke('save_plan_file', { content: finalDevPlan, projectPath: project.url, fileName: 'develop_plan.md' });
-            setLogs(prev => [...prev, "[系统] 开发计划已保存"]);
-
-            const testSession = await opencode.createSession(`TestPlan: ${project.name}`);
-            const testPrompt = `基于开发计划生成 testing_plan.md。直接输出内容。`;
-            const testResponse = await opencode.sendMessage(testSession.id, testPrompt);
-            const finalTestPlan = testResponse.parts?.filter(p => p.type === 'text' && p.text).map(p => p.text).join('\n') || "";
-            setTestPlan(finalTestPlan);
-
-            await invoke('save_plan_file', { content: finalTestPlan, projectPath: project.url, fileName: 'testing_plan.md' });
-            setLogs(prev => [...prev, "[系统] 测试计划已保存"]);
-
-            await loadProgress();
-
+            await invoke('start_analysis_task', {
+                projectName: project.name,
+                projectPath: project.url,
+                taskDescription: prdContent || project.prompt
+            });
+            setLogs(prev => [...prev, "[系统] 任务已在后台启动，离开页面后继续执行"]);
         } catch (e) {
             console.error("Analysis failed:", e);
             setLogs(prev => [...prev, `[错误] ${JSON.stringify(e)}`]);
-        } finally {
             setAnalyzing(false);
         }
     };
@@ -174,6 +264,15 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
         }
     };
 
+    const getStatusColor = (status: string) => {
+        switch (status) {
+            case 'completed': return 'bg-green-500';
+            case 'running': return 'bg-blue-500 animate-pulse';
+            case 'failed': return 'bg-red-500';
+            default: return 'bg-slate-400';
+        }
+    };
+
     return (
         <div className="flex flex-col h-full bg-slate-50 dark:bg-[#1e1e1e] text-slate-900 dark:text-slate-100">
             <div className="h-14 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-[#252526] flex items-center px-4 justify-between shrink-0">
@@ -212,13 +311,19 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
                                 <div className="flex items-center gap-2">
                                     <button disabled={analyzing} onClick={handleAnalyze} className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium bg-gradient-to-r from-orange-500 to-pink-500 text-white ${analyzing ? 'opacity-50' : ''}`}>
                                         <span className={`material-symbols-outlined ${analyzing ? 'animate-spin' : ''}`} style={{ fontSize: '18px' }}>{analyzing ? 'sync' : 'psychology'}</span>
-                                        {analyzing ? '分析中...' : '分析需求'}
+                                        {analyzing ? '后台分析中...' : '分析需求'}
                                     </button>
                                     <button disabled={supplementing || !prdFilePath.trim()} onClick={handleSupplementFromPRD} className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium bg-gradient-to-r from-blue-500 to-indigo-500 text-white ${supplementing || !prdFilePath.trim() ? 'opacity-50' : ''}`}>
                                         <span className={`material-symbols-outlined ${supplementing ? 'animate-spin' : ''}`} style={{ fontSize: '18px' }}>{supplementing ? 'sync' : 'add_circle'}</span>
                                         {supplementing ? '补充中...' : '补充计划'}
                                     </button>
                                 </div>
+                                {analyzing && taskStatus && (
+                                    <div className="flex items-center gap-2 mt-2">
+                                        <span className={`w-2 h-2 rounded-full ${getStatusColor(taskStatus.status)}`}></span>
+                                        <span className="text-xs text-slate-500">{taskStatus.message} ({taskStatus.progress}%)</span>
+                                    </div>
+                                )}
                             </div>
                             <div className="p-2 border-b border-slate-200 dark:border-slate-800">
                                 <input type="text" value={prdFilePath} onChange={(e) => setPrdFilePath(e.target.value)} placeholder="PRD 文件路径..." className="w-full px-3 py-1.5 rounded-md text-xs border border-slate-300 dark:border-slate-600 bg-white dark:bg-gray-700" />
@@ -227,12 +332,28 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
                         </div>
                         <div className="flex-1 flex flex-col min-w-0 bg-white dark:bg-[#1e1e1e]">
                             <div className="flex-1 flex flex-col border-b border-slate-200 dark:border-slate-800 min-h-0">
-                                <div className="p-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#252526]"><h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">开发计划</h3></div>
-                                <textarea className="flex-1 w-full bg-transparent p-4 text-sm font-mono resize-none focus:outline-none" value={devPlan} onChange={(e) => setDevPlan(e.target.value)} placeholder="开发计划..." />
+                                <div className="p-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#252526] flex justify-between items-center">
+                                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">开发计划</h3>
+                                    <div className="flex items-center gap-2">
+                                        {devPlanModified && <span className="text-xs text-orange-500">已修改</span>}
+                                        <button onClick={handleSaveDevPlan} disabled={!devPlanModified || isSaving} className={`px-2 py-1 text-xs rounded ${devPlanModified ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-slate-200 dark:bg-slate-700 text-slate-400'}`}>
+                                            {isSaving ? '保存中...' : '保存'}
+                                        </button>
+                                    </div>
+                                </div>
+                                <textarea className="flex-1 w-full bg-transparent p-4 text-sm font-mono resize-none focus:outline-none" value={devPlan} onChange={(e) => { setDevPlan(e.target.value); setDevPlanModified(true); }} placeholder="开发计划..." />
                             </div>
                             <div className="flex-1 flex flex-col min-h-0">
-                                <div className="p-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#252526]"><h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">测试计划</h3></div>
-                                <textarea className="flex-1 w-full bg-transparent p-4 text-sm font-mono resize-none focus:outline-none" value={testPlan} onChange={(e) => setTestPlan(e.target.value)} placeholder="测试计划..." />
+                                <div className="p-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#252526] flex justify-between items-center">
+                                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">测试计划</h3>
+                                    <div className="flex items-center gap-2">
+                                        {testPlanModified && <span className="text-xs text-orange-500">已修改</span>}
+                                        <button onClick={handleSaveTestPlan} disabled={!testPlanModified || isSaving} className={`px-2 py-1 text-xs rounded ${testPlanModified ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-slate-200 dark:bg-slate-700 text-slate-400'}`}>
+                                            {isSaving ? '保存中...' : '保存'}
+                                        </button>
+                                    </div>
+                                </div>
+                                <textarea className="flex-1 w-full bg-transparent p-4 text-sm font-mono resize-none focus:outline-none" value={testPlan} onChange={(e) => { setTestPlan(e.target.value); setTestPlanModified(true); }} placeholder="测试计划..." />
                             </div>
                         </div>
                     </div>

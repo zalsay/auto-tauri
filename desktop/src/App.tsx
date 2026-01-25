@@ -332,6 +332,7 @@ function App() {
     // Lists
     const [projectsList, setProjectsList] = useState<Project[]>([]);
     const [tasksList, setTasksList] = useState<Task[]>([]);
+    const [projectTaskStatuses, setProjectTaskStatuses] = useState<Record<string, { status: string; progress: number; message: string }>>({});
 
     // Organization State
     const [, setOrganizations] = useState<Organization[]>([]);
@@ -531,6 +532,27 @@ function App() {
         } catch (e) { }
     }
 
+    async function pollProjectTaskStatuses() {
+        const codingProjects = projectsList.filter(p => p.type === 'coding_master');
+        for (const project of codingProjects) {
+            try {
+                const result = await invoke('get_task_status', { projectPath: project.url });
+                if (result) {
+                    setProjectTaskStatuses(prev => ({
+                        ...prev,
+                        [project.id]: {
+                            status: (result as any).status || 'pending',
+                            progress: (result as any).progress || 0,
+                            message: (result as any).message || ''
+                        }
+                    }));
+                }
+            } catch (e) {
+                // Task may not exist, ignore
+            }
+        }
+    }
+
     async function loadTasks() {
         setLoading(true);
         try {
@@ -542,6 +564,21 @@ function App() {
             setLoading(false);
         }
     }
+
+    // Poll project task statuses when viewing projects or dashboard
+    useEffect(() => {
+        if (projectsList.length === 0) return;
+
+        pollProjectTaskStatuses();
+
+        const interval = setInterval(() => {
+            if (dashView === 'projects' || dashView === 'dashboard') {
+                pollProjectTaskStatuses();
+            }
+        }, 3000);
+
+        return () => clearInterval(interval);
+    }, [projectsList, dashView]);
 
     // Organization API Functions
     async function loadOrganizations() {
@@ -1247,10 +1284,6 @@ function App() {
             const response = await opencode.sendCoworkCommandStreaming(
                 session.id,
                 taskPrompt,
-                (_chunk) => {
-                    // Chunks are now handled via SSE, so we ignore them here
-                    // to avoid duplicate logs
-                },
                 localWorkflowPath // Pass restriction path to backend service
             );
             console.log('[Opencode] Cowork response:', response);
@@ -2150,12 +2183,24 @@ function App() {
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                                     {projectsList.slice(0, 6).map(p => {
                                         const typeConfig = PROJECT_TYPE_CONFIG[p.type] || PROJECT_TYPE_CONFIG['xhs_publish'];
+                                        const taskStatus = p.type === 'coding_master' ? projectTaskStatuses[p.id] : null;
+                                        const isRunning = taskStatus?.status === 'running';
                                         return (
-                                            <div key={p.id} className="rounded-xl bg-surface-light p-5 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 flex flex-col gap-3">
+                                            <div key={p.id} className={`rounded-xl bg-surface-light p-5 shadow-sm dark:bg-surface-dark border ${isRunning ? 'border-blue-400 dark:border-blue-500' : 'border-slate-200 dark:border-slate-800'} flex flex-col gap-3 relative overflow-hidden`}>
+                                                {isRunning && (
+                                                    <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 to-purple-500 animate-pulse" />
+                                                )}
                                                 <div className="flex justify-between items-start">
-                                                    <h4 className="font-bold text-slate-900 dark:text-white truncate">{p.name}</h4>
+                                                    <h4 className="font-bold text-slate-900 dark:text-white truncate pr-2">{p.name}</h4>
                                                     <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${typeConfig.color} ${typeConfig.darkColor}`}>{typeConfig.label}</span>
                                                 </div>
+                                                {isRunning && (
+                                                    <div className="flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400">
+                                                        <span className="size-2 rounded-full bg-blue-500 animate-pulse"></span>
+                                                        <span className="truncate">{taskStatus?.message || '分析中...'}</span>
+                                                        <span className="ml-auto font-mono">{taskStatus?.progress || 0}%</span>
+                                                    </div>
+                                                )}
                                                 <p className="text-xs text-slate-500 line-clamp-2 h-8">{p.prompt}</p>
                                                 <div className="flex gap-2 mt-2">
                                                     <button onClick={() => {
@@ -2202,16 +2247,29 @@ function App() {
                                                     <span className="text-sm text-slate-500">({projectsOfType.length})</span>
                                                 </div>
                                                 <div className="grid grid-cols-1 gap-3">
-                                                    {projectsOfType.map(p => (
-                                                        <div key={p.id} className="rounded-xl bg-surface-light p-5 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 flex items-center justify-between">
-                                                            <div className="flex-1">
+                                                    {projectsOfType.map(p => {
+                                                        const taskStatus = p.type === 'coding_master' ? projectTaskStatuses[p.id] : null;
+                                                        const isRunning = taskStatus?.status === 'running';
+                                                        return (
+                                                        <div key={p.id} className={`rounded-xl bg-surface-light p-5 shadow-sm dark:bg-surface-dark border ${isRunning ? 'border-blue-400 dark:border-blue-500' : 'border-slate-200 dark:border-slate-800'} flex items-center justify-between relative overflow-hidden`}>
+                                                            {isRunning && (
+                                                                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 to-purple-500 animate-pulse" />
+                                                            )}
+                                                            <div className="flex-1 min-w-0 pr-4">
                                                                 <div className="flex items-center gap-3 mb-1">
-                                                                    <h4 className="text-base font-bold text-slate-900 dark:text-white">{p.name}</h4>
+                                                                    <h4 className="text-base font-bold text-slate-900 dark:text-white truncate">{p.name}</h4>
                                                                     <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${typeConfig.color} ${typeConfig.darkColor}`}>{typeConfig.label}</span>
                                                                 </div>
+                                                                {isRunning && (
+                                                                    <div className="flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400 mb-1">
+                                                                        <span className="size-2 rounded-full bg-blue-500 animate-pulse"></span>
+                                                                        <span className="truncate">{taskStatus?.message || '分析中...'}</span>
+                                                                        <span className="ml-2 font-mono bg-blue-100 dark:bg-blue-900/30 px-1.5 py-0.5 rounded">{taskStatus?.progress || 0}%</span>
+                                                                    </div>
+                                                                )}
                                                                 <p className="text-sm text-slate-500 line-clamp-1">{p.prompt}</p>
                                                             </div>
-                                                            <div className="flex gap-3">
+                                                            <div className="flex gap-3 shrink-0">
                                                                 <button onClick={() => {
                                                                     if (p.type === 'coding_master') {
                                                                         setActiveProject(p);
@@ -2229,7 +2287,8 @@ function App() {
                                                                 <button onClick={() => handleDeleteProject(p.id)} className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"><span className="material-symbols-outlined">delete</span></button>
                                                             </div>
                                                         </div>
-                                                    ))}
+                                                        );
+                                                    })}
                                                 </div>
                                             </div>
                                         );

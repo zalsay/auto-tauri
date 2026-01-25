@@ -79,7 +79,6 @@ export async function uploadToCOS(
         });
 
         // 计算签名 (简化版本 - 生产环境应使用 COS SDK)
-        const now = new Date();
 
         xhr.open('PUT', url);
         xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');

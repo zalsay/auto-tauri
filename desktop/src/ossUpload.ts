@@ -133,12 +133,10 @@ async function getOSSClient(): Promise<OSS> {
 /**
  * 上传文件到 OSS (使用 ali-oss SDK)
  * @param file 要上传的文件
- * @param onProgress 进度回调 (0-100)
  * @returns 上传后的 URL
  */
 export async function uploadToOSS(
-    file: File,
-    onProgress?: (percent: number) => void
+    file: File
 ): Promise<string> {
     const client = await getOSSClient();
 
@@ -149,13 +147,7 @@ export async function uploadToOSS(
     const objectKey = `uploads/${timestamp}-${randomStr}.${ext}`;
 
     try {
-        const result = await client.put(objectKey, file, {
-            progress: (p: number) => {
-                if (onProgress) {
-                    onProgress(Math.round(p * 100));
-                }
-            },
-        });
+        const result = await client.put(objectKey, file);
 
         // 返回公开访问 URL
         return result.url;

@@ -64,6 +64,7 @@ async function opencodeRequest<T>(
     options: RequestInit = {}
 ): Promise<T> {
     const url = `${OPENCODE_SERVER_URL}${path}`;
+    const startTime = Date.now();
     console.log(`[Opencode] ${options.method || 'GET'} ${url}`);
 
     const headers = new Headers(options.headers || {});
@@ -71,20 +72,31 @@ async function opencodeRequest<T>(
         headers.set('Content-Type', 'application/json');
     }
 
-    const response = await fetch(url, { ...options, headers });
+    try {
+        const response = await fetch(url, { ...options, headers });
+        const duration = Date.now() - startTime;
+        console.log(`[Opencode] Response ${response.status} in ${duration}ms`);
 
-    if (!response.ok) {
-        const errorText = await response.text();
-        let errorData;
-        try {
-            errorData = JSON.parse(errorText);
-        } catch {
-            errorData = { error: errorText };
+        if (!response.ok) {
+            const errorText = await response.text();
+            let errorData;
+            try {
+                errorData = JSON.parse(errorText);
+            } catch {
+                errorData = { error: errorText };
+            }
+            console.error(`[Opencode] Error response:`, errorData);
+            throw new Error(errorData.error || errorData.message || `Request failed: ${response.status}`);
         }
-        throw new Error(errorData.error || errorData.message || `Request failed: ${response.status}`);
-    }
 
-    return response.json();
+        const data = await response.json();
+        console.log(`[Opencode] Success in ${duration}ms`);
+        return data;
+    } catch (error) {
+        const duration = Date.now() - startTime;
+        console.error(`[Opencode] Request failed after ${duration}ms:`, error);
+        throw error;
+    }
 }
 
 // ============ Health & Info ============
@@ -193,19 +205,21 @@ export async function sendCoworkCommand(
  */
 export async function sendMessageStreaming(
     sessionId: string,
-    text: string,
-    onChunk: (chunk: string) => void
+    text: string
 ): Promise<OpencodeMessage | null> {
     const url = `${getOpencodeServerUrl()}/session/${sessionId}/message`;
-    console.log(`[Opencode] POST (streaming wrapper) ${url}`);
+    const startTime = Date.now();
+    console.log(`[Opencode] POST (streaming) ${url}`);
+    console.log(`[Opencode] Request body:`, JSON.stringify({ parts: [{ type: 'text', text: text.slice(0, 100) + (text.length > 100 ? '...' : '') }] }));
 
     // Set a long timeout (30 minutes) for AI tasks
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30 * 60 * 1000);
+    const timeoutId = setTimeout(() => {
+        console.warn(`[Opencode] Request timeout after 30 minutes for session ${sessionId}`);
+        controller.abort();
+    }, 30 * 60 * 1000);
 
     try {
-        // Just use standard sendMessage logic but with long timeout
-        // We rely on SSE for the actual chunks
         const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -213,67 +227,24 @@ export async function sendMessageStreaming(
             signal: controller.signal
         });
         clearTimeout(timeoutId);
+        const duration = Date.now() - startTime;
+        console.log(`[Opencode] Streaming response status: ${response.status} in ${duration}ms`);
 
         if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`[Opencode] Streaming error response:`, errorText);
             throw new Error(`Request failed: ${response.status}`);
         }
 
         const data = await response.json();
+        console.log(`[Opencode] Streaming success in ${duration}ms`);
         return data;
     } catch (error) {
         clearTimeout(timeoutId);
+        const duration = Date.now() - startTime;
+        console.error(`[Opencode] Streaming request failed after ${duration}ms:`, error);
         throw error;
     }
-}
-
-function handleParsedData(data: any, onChunk: (chunk: string) => void) {
-    console.log('[Opencode] handleParsedData called with:', JSON.stringify(data).slice(0, 200));
-
-    // Handle opencode message format with info + parts
-    if (data.parts && Array.isArray(data.parts)) {
-        console.log('[Opencode] Found parts array, length:', data.parts.length);
-        data.parts.forEach((part: MessagePart, index: number) => {
-            console.log(`[Opencode] Processing part ${index}:`, part.type, part.text?.slice(0, 50));
-            if (part.type === 'text' && part.text) {
-                console.log('[Opencode] Calling onChunk with text');
-                onChunk(part.text);
-            }
-        });
-        return;
-    }
-
-    // Handle simple text response
-    if (data.type === 'text' || data.text) {
-        const text = data.text || data.content || '';
-        if (text) {
-            console.log('[Opencode] Calling onChunk with simple text');
-            onChunk(text);
-        }
-        return;
-    }
-
-    // Check for thinking/reasoning content
-    if (data.thinking || data.reasoning || data.thought) {
-        const thinking = data.thinking || data.reasoning || data.thought;
-        console.log('[Opencode] Found thinking content:', thinking.slice(0, 50));
-        onChunk(`[Thinking] ${thinking}`);
-        return;
-    }
-
-    // Log unknown format
-    console.log('[Opencode] Unknown data keys:', Object.keys(data));
-
-    // Handle tool events
-    if (data.type === 'tool_use') {
-        onChunk(`[Tool] 调用 ${data.name || data.toolName}`);
-        return;
-    }
-    if (data.type === 'tool_result') {
-        onChunk(`[Tool] 完成`);
-        return;
-    }
-
-    console.log('[Opencode] No matching format found for data');
 }
 
 /**
@@ -282,7 +253,6 @@ function handleParsedData(data: any, onChunk: (chunk: string) => void) {
 export async function sendCoworkCommandStreaming(
     sessionId: string,
     task: string,
-    onChunk: (chunk: string) => void,
     rootPath?: string
 ): Promise<OpencodeMessage | null> {
     let finalTask = `/cowork ${task}`;
@@ -292,7 +262,7 @@ export async function sendCoworkCommandStreaming(
         finalTask = `/cowork Important: You are strictly restricted to working within the directory: ${rootPath}. Do not access or modify files outside this directory.\n\n${task}`;
     }
 
-    return sendMessageStreaming(sessionId, finalTask, onChunk);
+    return sendMessageStreaming(sessionId, finalTask);
 }
 
 // ============ Agents ============

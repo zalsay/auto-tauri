@@ -51,6 +51,37 @@ pub async fn save_plan_file(content: String, project_path: String, file_name: St
     save_plan_to_file_internal(&content, &project_path, &file_name).await
 }
 
+/// Tauri command to read plan file
+#[tauri::command]
+pub async fn read_plan_file(project_path: String, file_name: String) -> Result<String, String> {
+    let file_path = Path::new(&project_path).join("specs").join(&file_name);
+    if !file_path.exists() {
+        return Err(format!("File not found: {}", file_path.display()));
+    }
+    let content = fs::read_to_string(&file_path)
+        .await
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+    Ok(content)
+}
+
+/// Tauri command to check if plan files exist
+#[tauri::command]
+pub async fn check_plan_files(project_path: String) -> Result<PlanFilesStatus, String> {
+    let dev_plan_path = Path::new(&project_path).join("specs").join("develop_plan.md");
+    let test_plan_path = Path::new(&project_path).join("specs").join("testing_plan.md");
+
+    Ok(PlanFilesStatus {
+        dev_plan_exists: dev_plan_path.exists(),
+        test_plan_exists: test_plan_path.exists(),
+    })
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PlanFilesStatus {
+    pub dev_plan_exists: bool,
+    pub test_plan_exists: bool,
+}
+
 #[tauri::command]
 pub async fn generate_dev_plan(task_description: String, project_path: String) -> Result<String, String> {
     let skill_content = read_skill_content("specification-planning".to_string()).await?;

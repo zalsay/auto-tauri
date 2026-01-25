@@ -161,7 +161,6 @@ export default function CodingMasterDashboard({ projectPath, onClose }: Props) {
                 opencode.sendCoworkCommandStreaming(
                     session.id,
                     finalPrompt,
-                    () => { }, // Callback handled by Chat component SSE
                     projectPath
                 ).catch(err => console.error("Components trigger error:", err));
             }, 500);

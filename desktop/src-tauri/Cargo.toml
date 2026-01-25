@@ -28,4 +28,6 @@ tokio = { version = "1", features = ["sync", "process", "io-util", "rt", "macros
 lazy_static = "1.4"
 reqwest = { version = "0.11", features = ["json"] }
 regex = "1"
+log = "0.4"
+env_logger = "0.10"
 

@@ -308,6 +308,10 @@ Agent 加载 skill 并执行：
 | `extract_tasks_from_prd` | parser.rs | 解析 PRD 为任务 |
 | `generate_dev_plan` | planner.rs | 生成开发计划 |
 | `generate_test_plan` | planner.rs | 生成测试计划 |
+| `read_skill_content` | planner.rs | 读取 skill 文件内容 |
+| `save_plan_file` | planner.rs | 保存计划文件 |
+| `read_plan_file` | planner.rs | 读取计划文件 |
+| `check_plan_files` | planner.rs | 检查计划文件是否存在 |
 | `supplement_plan_from_prd` | parser.rs | 从 PRD 补充开发计划 |
 | `supplement_test_plan_from_prd` | parser.rs | 从 PRD 补充测试计划 |
 | `parse_development_steps` | parser.rs | 解析开发计划步骤 |

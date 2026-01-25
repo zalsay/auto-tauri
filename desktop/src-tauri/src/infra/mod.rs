@@ -8,3 +8,4 @@ pub mod router;
 pub mod parser;
 pub mod planner;
 pub mod opencode_api;
+pub mod task_manager;

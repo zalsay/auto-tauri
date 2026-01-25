@@ -1,5 +1,9 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
+#[macro_use]
+extern crate log;
+extern crate env_logger;
+
 mod infra;
 
 use infra::doctor::{check_system_health, install_tool_in_terminal};
@@ -13,7 +17,8 @@ use infra::ralph::{
 use infra::router::{smart_dispatch_task, DispatchResult};
 use infra::parser::{extract_tasks_from_prd, supplement_plan_from_prd, supplement_test_plan_from_prd, parse_development_steps, mark_step_completed, mark_step_skipped, reset_steps, DevelopmentProgress, DevelopmentStep, StepStatus};
 
-use infra::planner::{generate_dev_plan, generate_test_plan, read_skill_content, save_plan_file};
+use infra::planner::{generate_dev_plan, generate_test_plan, read_skill_content, save_plan_file, read_plan_file, check_plan_files, PlanFilesStatus};
+use infra::task_manager::{start_analysis_task, get_task_status, get_task_by_id, cancel_task, AnalysisTask, TaskStatus};
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -43,6 +48,8 @@ async fn get_opencode_status() -> OpenCodeStatus {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    env_logger::init();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -65,12 +72,18 @@ pub fn run() {
             generate_test_plan,
             read_skill_content,
             save_plan_file,
+            read_plan_file,
+            check_plan_files,
             supplement_plan_from_prd,
             supplement_test_plan_from_prd,
             parse_development_steps,
             mark_step_completed,
             mark_step_skipped,
-            reset_steps
+            reset_steps,
+            start_analysis_task,
+            get_task_status,
+            get_task_by_id,
+            cancel_task
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
