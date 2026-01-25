@@ -157,6 +157,47 @@ export async function uploadToOSS(
     }
 }
 
+
+/**
+ * 从 OSS 下载文件内容 (Text)
+ * @param objectKey OSS 文件路径
+ * @returns 文件文本内容
+ */
+export async function downloadFromOSS(objectKey: string): Promise<string> {
+    const client = await getOSSClient();
+    try {
+        const result = await client.get(objectKey);
+        if (result.res.status === 200) {
+            return result.content.toString();
+        }
+        throw new Error(`Download failed with status ${result.res.status}`);
+    } catch (error: any) {
+        if (error.code === 'NoSuchKey') {
+            throw new Error('File not found');
+        }
+        console.error('[OSS] Download failed:', error);
+        throw error;
+    }
+}
+
+/**
+ * 上传文本内容到 OSS
+ * @param content 文本内容
+ * @param objectKey OSS 文件路径
+ * @returns 上传后的 URL
+ */
+export async function uploadTextToOSS(content: string, objectKey: string): Promise<string> {
+    const client = await getOSSClient();
+    try {
+        // 使用 Buffer.from 确保正确编码
+        const result = await client.put(objectKey, Buffer.from(content));
+        return result.url;
+    } catch (error: any) {
+        console.error('[OSS] Text upload failed:', error);
+        throw new Error(`Upload failed: ${error.message}`);
+    }
+}
+
 /**
  * 简易版 OSS 上传 (使用 SDK)
  * 直接调用 SDK 上传，失败时抛出错误

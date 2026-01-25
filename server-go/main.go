@@ -61,6 +61,7 @@ func main() {
 			auth.DELETE("/projects/:id", deleteProjectHandler)
 			auth.POST("/projects/:id/execute", executeProjectHandler)
 			auth.GET("/projects/:id/materials", getProjectMaterialsHandler)
+			auth.GET("/projects/:id", getProjectHandler) // Add route
 
 			// Tasks
 			auth.GET("/tasks", getTasksHandler)

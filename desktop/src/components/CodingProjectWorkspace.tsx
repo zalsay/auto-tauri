@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from "@tauri-apps/api/core";
+import { apiRequest } from '../ossUpload';
 
 
 interface Project {
@@ -62,10 +63,120 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
         if (project.prompt) {
             setPrdContent(project.prompt);
         }
-        loadSavedPlans();
-        loadProgress();
+        // Initialize: Load local, then try sync from OSS
+        initProjectData();
         checkTaskStatus();
     }, [project]);
+
+    const initProjectData = async () => {
+        const { dev: localDev, test: localTest } = await loadSavedPlans(); // Load local first for speed
+        await loadProgress();
+
+        // Sync with Backend (DB/Redis)
+        try {
+            const remoteProject = await apiRequest(`/api/v1/projects/${project.id}`);
+            if (remoteProject) {
+                const remoteDev = remoteProject.devPlan || "";
+                const remoteTest = remoteProject.testPlan || "";
+
+                if (!localDev && remoteDev) {
+                    setDevPlan(remoteDev);
+                    await invoke('save_plan_file', { content: remoteDev, projectPath: project.url, fileName: 'develop_plan.md' });
+                    setLogs((l: string[]) => [...l, `[同步] 已从云端(DB)恢复开发计划`]);
+                } else if (localDev && remoteDev !== localDev && !remoteDev) {
+                    await savePlanToBackend('develop', localDev);
+                }
+
+                if (!localTest && remoteTest) {
+                    setTestPlan(remoteTest);
+                    await invoke('save_plan_file', { content: remoteTest, projectPath: project.url, fileName: 'testing_plan.md' });
+                    setLogs((l: string[]) => [...l, `[同步] 已从云端(DB)恢复测试计划`]);
+                } else if (localTest && remoteTest !== localTest && !remoteTest) {
+                    await savePlanToBackend('testing', localTest);
+                }
+            }
+        } catch (e) {
+            console.error("Failed to sync with backend:", e);
+        }
+    };
+
+    const savePlanToBackend = async (type: 'develop' | 'testing', content: string) => {
+        try {
+            const payload: any = {};
+            if (type === 'develop') payload.devPlan = content;
+            if (type === 'testing') payload.testPlan = content;
+
+            await apiRequest(`/api/v1/projects/${project.id}`, {
+                method: 'PUT',
+                body: JSON.stringify(payload)
+            });
+            console.log(`[Sync] Saved ${type} plan to backend`);
+        } catch (e) {
+            // console.error(`[Sync] Failed to save ${type} plan to backend:`, e);
+        }
+    };
+
+    const getOSSKey = (planType: 'develop' | 'testing') => {
+        // Uniform naming convention: project_id/plan_type.md
+        // Sanitize project name/id to be safe for OSS keys
+        const cleanName = project.name.replace(/[^a-zA-Z0-9-_]/g, '_');
+        return `plans/${cleanName}/${planType}_plan.md`;
+    };
+
+    const syncPlansWithOSS = async (localDevPlan: string, localTestPlan: string) => {
+        console.log('[Sync] Starting OSS sync...');
+
+        // 1. Sync Develop Plan
+        try {
+            const devKey = getOSSKey('develop');
+            // Try to download from OSS
+            try {
+                const ossDevPlan = await downloadFromOSS(devKey);
+                // If local is empty but OSS has content, use OSS
+                if (!localDevPlan && ossDevPlan) {
+                    setDevPlan(ossDevPlan);
+                    await invoke('save_plan_file', { content: ossDevPlan, projectPath: project.url, fileName: 'develop_plan.md' });
+                    setLogs(l => [...l, `[同步] 已从云端恢复开发计划`]);
+                }
+                // If local exists, we assume it's newer (or equal) because we just loaded it from disk.
+                // We overwrite OSS with local to ensure OSS is up to date (sync on load).
+            } catch (e: any) {
+                if (e.message !== 'File not found') console.error('[Sync] Download dev plan failed:', e);
+            }
+
+            // Upload current local to OSS (Sync to OSS on update/load if exists)
+            // But we should only upload if we actually have one.
+            if (localDevPlan) {
+                await uploadTextToOSS(localDevPlan, devKey);
+                console.log('[Sync] Uploaded dev plan to OSS');
+            }
+        } catch (e) {
+            console.error('[Sync] Dev plan sync error:', e);
+        }
+
+        // 2. Sync Test Plan
+        try {
+            const testKey = getOSSKey('testing');
+            try {
+                const ossTestPlan = await downloadFromOSS(testKey);
+                if (!localTestPlan && ossTestPlan) {
+                    setTestPlan(ossTestPlan);
+                    await invoke('save_plan_file', { content: ossTestPlan, projectPath: project.url, fileName: 'testing_plan.md' });
+                    setLogs(l => [...l, `[同步] 已从云端恢复测试计划`]);
+                }
+            } catch (e: any) {
+                if (e.message !== 'File not found') console.error('[Sync] Download test plan failed:', e);
+            }
+
+            if (localTestPlan) {
+                await uploadTextToOSS(localTestPlan, testKey);
+                console.log('[Sync] Uploaded test plan to OSS');
+            }
+        } catch (e) {
+            console.error('[Sync] Test plan sync error:', e);
+        }
+    };
+
 
     // Poll task status when analyzing
     useEffect(() => {
@@ -122,19 +233,24 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
     }, [project.url]);
 
     const loadSavedPlans = useCallback(async () => {
+        let dev = "";
+        let test = "";
         try {
             const devResult = await invoke('read_plan_file', { projectPath: project.url, fileName: 'develop_plan.md' });
-            setDevPlan(devResult as string);
+            dev = devResult as string;
+            setDevPlan(dev);
         } catch (e) {
             console.log("No saved dev plan found");
         }
 
         try {
             const testResult = await invoke('read_plan_file', { projectPath: project.url, fileName: 'testing_plan.md' });
-            setTestPlan(testResult as string);
+            test = testResult as string;
+            setTestPlan(test);
         } catch (e) {
             console.log("No saved test plan found");
         }
+        return { dev, test };
     }, [project.url]);
 
     const handleSaveDevPlan = async () => {
@@ -143,6 +259,11 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
             await invoke('save_plan_file', { content: devPlan, projectPath: project.url, fileName: 'develop_plan.md' });
             setDevPlanModified(false);
             setLogs(prev => [...prev, "[系统] 开发计划已保存"]);
+
+            // Sync to Backend
+            savePlanToBackend('develop', devPlan)
+                .then(() => setLogs(l => [...l, "[同步] 开发计划已同步到云端"]))
+                .catch(e => console.error(e));
         } catch (e) {
             setLogs(prev => [...prev, `[错误] 保存开发计划失败: ${JSON.stringify(e)}`]);
         } finally {
@@ -156,6 +277,11 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
             await invoke('save_plan_file', { content: testPlan, projectPath: project.url, fileName: 'testing_plan.md' });
             setTestPlanModified(false);
             setLogs(prev => [...prev, "[系统] 测试计划已保存"]);
+
+            // Sync to Backend
+            savePlanToBackend('testing', testPlan)
+                .then(() => setLogs(l => [...l, "[同步] 测试计划已同步到云端"]))
+                .catch(e => console.error(e));
         } catch (e) {
             setLogs(prev => [...prev, `[错误] 保存测试计划失败: ${JSON.stringify(e)}`]);
         } finally {
@@ -390,26 +516,23 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
                                 </div>
                             ) : (
                                 progress.steps.map((step) => (
-                                    <div key={step.id} className={`p-4 rounded-lg border-2 ${
-                                        step.status === 'completed' ? 'bg-green-50 dark:bg-green-900/20 border-green-300' :
+                                    <div key={step.id} className={`p-4 rounded-lg border-2 ${step.status === 'completed' ? 'bg-green-50 dark:bg-green-900/20 border-green-300' :
                                         step.status === 'skipped' ? 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-300' :
-                                        step.status === 'in_progress' ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-400' :
-                                        'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'
-                                    }`}>
+                                            step.status === 'in_progress' ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-400' :
+                                                'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'
+                                        }`}>
                                         <div className="flex items-start justify-between mb-2">
                                             <div className="flex items-center gap-3">
-                                                <span className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold ${
-                                                    step.status === 'completed' ? 'bg-green-500' :
+                                                <span className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold ${step.status === 'completed' ? 'bg-green-500' :
                                                     step.status === 'skipped' ? 'bg-yellow-500' :
-                                                    step.status === 'in_progress' ? 'bg-blue-500' : 'bg-slate-400'
-                                                }`}>{step.id}</span>
+                                                        step.status === 'in_progress' ? 'bg-blue-500' : 'bg-slate-400'
+                                                    }`}>{step.id}</span>
                                                 <div>
                                                     <h4 className="font-medium text-sm">{step.title}</h4>
-                                                    <span className={`text-xs px-2 py-0.5 rounded-full ${
-                                                        step.status === 'completed' ? 'bg-green-100 text-green-700' :
+                                                    <span className={`text-xs px-2 py-0.5 rounded-full ${step.status === 'completed' ? 'bg-green-100 text-green-700' :
                                                         step.status === 'skipped' ? 'bg-yellow-100 text-yellow-700' :
-                                                        step.status === 'in_progress' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
-                                                    }`}>
+                                                            step.status === 'in_progress' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
+                                                        }`}>
                                                         {step.status === 'pending' ? '待完成' : step.status === 'completed' ? '已完成' : step.status === 'skipped' ? '已跳过' : '进行中'}
                                                     </span>
                                                 </div>

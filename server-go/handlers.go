@@ -68,13 +68,15 @@ type ProjectCreateRequest struct {
 }
 
 type ProjectUpdateRequest struct {
-	Name         string `json:"name"`
-	URL          string `json:"url"`
-	Prompt       string `json:"prompt"`
-	Type         string `json:"type"`
-	Screenshot   *bool  `json:"screenshot"`
-	Platform     string `json:"platform"`
-	UseAIRewrite *bool  `json:"useAIRewrite"`
+	Name         string  `json:"name"`
+	URL          string  `json:"url"`
+	Prompt       string  `json:"prompt"`
+	Type         string  `json:"type"`
+	Screenshot   *bool   `json:"screenshot"`
+	Platform     string  `json:"platform"`
+	UseAIRewrite *bool   `json:"useAIRewrite"`
+	DevPlan      *string `json:"devPlan"`
+	TestPlan     *string `json:"testPlan"`
 }
 
 type TaskStartResponse struct {
@@ -389,6 +391,8 @@ func updateProjectHandler(c *gin.Context) {
 	}
 	log.Printf("[updateProjectHandler] Received request for project %s: %+v", id, req)
 
+	InvalidateProjectCache(id) // Invalidate cache on update
+
 	updates := map[string]interface{}{
 		"name":     req.Name,
 		"url":      req.URL,
@@ -401,6 +405,12 @@ func updateProjectHandler(c *gin.Context) {
 	}
 	if req.UseAIRewrite != nil {
 		updates["use_ai_rewrite"] = *req.UseAIRewrite
+	}
+	if req.DevPlan != nil {
+		updates["dev_plan"] = *req.DevPlan
+	}
+	if req.TestPlan != nil {
+		updates["test_plan"] = *req.TestPlan
 	}
 
 	if err := globalDB.Model(&Project{}).Where("id = ? AND user_id = ?", id, userID).Updates(updates).Error; err != nil {
@@ -416,6 +426,33 @@ func getProjectsHandler(c *gin.Context) {
 	var projects []Project
 	globalDB.Where("user_id = ?", userID).Order("created_at desc").Find(&projects)
 	c.JSON(http.StatusOK, projects)
+}
+
+func getProjectHandler(c *gin.Context) {
+	userID := c.MustGet("userID").(string)
+	id := c.Param("id")
+
+	// Try Cache First
+	cachedProject, err := GetProjectFromCache(id)
+	if err == nil && cachedProject != nil {
+		// Verify ownership (optional but good practice if cache doesn't store user_id validation context)
+		// Since cache stores full project, we can check UserID
+		if cachedProject.UserID == userID {
+			c.JSON(http.StatusOK, cachedProject)
+			return
+		}
+	}
+
+	var project Project
+	if err := globalDB.Where("id = ? AND user_id = ?", id, userID).First(&project).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "project_not_found"})
+		return
+	}
+
+	// Set Cache
+	SetProjectToCache(&project)
+
+	c.JSON(http.StatusOK, project)
 }
 
 func deleteProjectHandler(c *gin.Context) {

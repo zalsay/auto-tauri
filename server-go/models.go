@@ -64,6 +64,8 @@ type Project struct {
 	Screenshot   bool      `gorm:"not null;default:false" json:"screenshot"`
 	Platform     string    `gorm:"size:32;default:'xhs'" json:"platform"`
 	UseAIRewrite bool      `gorm:"not null;default:false" json:"useAIRewrite"`
+	DevPlan      string    `gorm:"type:text" json:"devPlan"`  // New field
+	TestPlan     string    `gorm:"type:text" json:"testPlan"` // New field
 	CreatedAt    time.Time `gorm:"autoCreateTime" json:"createdAt"`
 	UpdatedAt    time.Time `gorm:"autoUpdateTime" json:"updatedAt"`
 }
