@@ -114,6 +114,91 @@ async fn execute_command_stream(
     Ok(())
 }
 
+/// Execute opencode command and stream output to frontend
+#[tauri::command]
+async fn execute_opencode_command(
+    window: tauri::Window,
+    prompt: String,
+    working_dir: String,
+    event_id: String,
+) -> Result<(), String> {
+    use tokio::process::Command as AsyncCommand;
+    use tokio::io::{AsyncBufReadExt, BufReader as AsyncBufReader};
+
+    info!("Executing opencode command in {}", working_dir);
+
+    let escaped_prompt = prompt.replace("\"", "\\\"").replace("\n", "\\n");
+
+    let opencode_cmd = format!(
+        r#"export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" && cd "{}" && opencode --title "AI Coding" --model openai --prompt "{}""#,
+        working_dir,
+        escaped_prompt
+    );
+
+    let mut child = AsyncCommand::new("bash")
+        .arg("-c")
+        .arg(&opencode_cmd)
+        .current_dir(&working_dir)
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("启动 opencode 失败: {}", e))?;
+
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+
+    let mut stdout_reader = AsyncBufReader::new(stdout);
+    let mut stderr_reader = AsyncBufReader::new(stderr);
+
+    let mut stdout_line = String::new();
+    let mut stderr_line = String::new();
+
+    loop {
+        tokio::select! {
+            stdout_result = stdout_reader.read_line(&mut stdout_line) => {
+                match stdout_result {
+                    Ok(n) if n > 0 => {
+                        let output = stdout_line.trim().to_string();
+                        if !output.is_empty() {
+                            let _ = window.emit(&event_id, serde_json::json!({
+                                "type": "output",
+                                "content": output
+                            }));
+                        }
+                        stdout_line.clear();
+                    }
+                    _ => {}
+                }
+            }
+            stderr_result = stderr_reader.read_line(&mut stderr_line) => {
+                match stderr_result {
+                    Ok(n) if n > 0 => {
+                        let output = stderr_line.trim().to_string();
+                        if !output.is_empty() {
+                            let _ = window.emit(&event_id, serde_json::json!({
+                                "type": "output",
+                                "content": output
+                            }));
+                        }
+                        stderr_line.clear();
+                    }
+                    _ => {}
+                }
+            }
+            else => break,
+        }
+    }
+
+    let status = child.wait().await.map_err(|e| format!("等待命令完成失败: {}", e))?;
+    let exit_code = status.code().unwrap_or(-1);
+
+    let _ = window.emit(&event_id, serde_json::json!({
+        "type": "complete",
+        "exit_code": exit_code
+    }));
+
+    Ok(())
+}
+
 /// Spawn an OpenCode task for a specific file
 #[tauri::command]
 async fn spawn_opencode_task(
@@ -174,7 +259,8 @@ pub fn run() {
             get_task_by_id,
             cancel_task,
             execute_command,
-            execute_command_stream
+            execute_command_stream,
+            execute_opencode_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

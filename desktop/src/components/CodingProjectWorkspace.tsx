@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from "@tauri-apps/api/core";
 import { apiRequest } from '../api';
 import { downloadFromOSS, uploadTextToOSS } from '../ossUpload';
-import * as opencode from "../opencodeService";
+import AutoTerminalPanel from './AutoTerminalPanel';
 
 
 interface Project {
@@ -49,6 +49,7 @@ interface CodingProjectWorkspaceProps {
 export default function CodingProjectWorkspace({ project, onBack }: CodingProjectWorkspaceProps) {
     const [activeTab, setActiveTab] = useState<'plan' | 'code' | 'progress'>('plan');
     const [analyzing, setAnalyzing] = useState(false);
+    const [showAnalysisTerminal, setShowAnalysisTerminal] = useState(false);
     const [supplementing, setSupplementing] = useState(false);
     const [devPlan, setDevPlan] = useState("");
     const [testPlan, setTestPlan] = useState("");
@@ -64,9 +65,13 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
     const [executing, setExecuting] = useState(false);
     const [logs, setLogs] = useState<string[]>([]);
     const logsEndRef = useRef<HTMLDivElement>(null);
+    const [analysisSessionId, setAnalysisSessionId] = useState<string | null>(null);
+    const [devSessionId, setDevSessionId] = useState<string | null>(null);
 
-    // 用于 SSE 消息去重
-    const lastMessageIds = useRef<Set<string>>(new Set());
+    // Scroll to bottom of dev logs when they update
+    useEffect(() => {
+        logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [logs]);
 
     // Load saved plans and check task status on mount
     useEffect(() => {
@@ -312,115 +317,30 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
 
     const handleAnalyze = async () => {
         setAnalyzing(true);
-        setLogs(prev => [...prev, "[系统] 开始在后台分析需求..."]);
+        setShowAnalysisTerminal(true);
+        setAnalysisSessionId(`analyze-${Date.now()}`);
+    };
+
+    const handleAnalysisComplete = async () => {
+        setAnalyzing(false);
+        await loadProgress();
+        await initProjectData();
+        setTimeout(() => {
+            setShowAnalysisTerminal(false);
+            setAnalysisSessionId(null);
+        }, 3000);
+    };
+
+    const handleStartCoding = async () => {
+        setExecuting(true);
         setActiveTab('code');
+        setLogs([]);
+        setDevSessionId(`dev-${Date.now()}`);
+    };
 
-        try {
-            // 🔴 使用 opencode CLI 直接调用并订阅 SSE 事件
-            console.log('[CodingWorkspace] 🚀 Starting opencode analysis...');
-
-            // 1. 检查 opencode 服务器健康
-            const isHealthy = await opencode.checkHealth();
-            if (!isHealthy) {
-                throw new Error('AI 开发服务不可用，请运行: cd local-server && npm run serve');
-            }
-            setLogs(prev => [...prev, "[系统] ✅ 连接AI开发服务成功"]);
-
-            // 2. 创建 session
-            const session = await opencode.createSession(`需求分析: ${project.name}`);
-            console.log('[CodingWorkspace] ✅ Session created:', session.id);
-            setLogs(prev => [...prev, `[系统] 📋 会话已创建: ${session.id.slice(0, 8)}...`]);
-
-            // 3. 构造分析 prompt
-            const analyzePrompt = `请分析以下需求并生成开发计划和测试计划：
-
-需求描述：${prdContent || project.prompt}
-
-项目路径：${project.url}
-
-请：
-1. 分析需求并生成详细的开发计划 (specs/develop_plan.md)
-2. 生成对应的测试计划 (specs/testing_plan.md)
-3. 返回完整的计划和测试用例
-
-请使用中文回复。`;
-
-            // 4. 订阅 SSE 事件实时显示输出
-            setLogs(prev => [...prev, "[系统] 🔄 订阅实时输出..."]);
-            // 清除之前的去重记录
-            lastMessageIds.current.clear();
-
-            opencode.subscribeToSession(session.id, {
-                onMessage: (message) => {
-                    message.parts.forEach(part => {
-                        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-                        if ((part.type === 'text' || part.type === 'reasoning') && (part.text ?? "") && part.id) {
-                            // 去重：检查是否已处理过此消息
-                            if (lastMessageIds.current.has(part.id)) {
-                                return; // 跳过重复消息
-                            }
-                            lastMessageIds.current.add(part.id);
-
-                            setLogs(prev => {
-                                // 过滤掉系统消息，只显示有意义的输出
-                                const text = (part.text ?? "").trim();
-                                if (text.length < 5) return prev;
-                                if (text.includes('session') || text.includes('heartbeat')) return prev;
-
-                                // 检查是否与最后一条消息相同（防止连续重复）
-                                if (prev.length > 0 && prev[prev.length - 1]?.includes(text.slice(0, 100))) {
-                                    return prev;
-                                }
-
-                                return [...prev, `[AI] ${text.slice(0, 500)}${text.length > 500 ? '...' : ''}`];
-                            });
-                        }
-                    });
-                },
-                onToolUse: (_toolName, _input) => {
-                    setLogs(prev => [...prev, `[🔧 工具] ${_toolName}`]);
-                },
-                onToolResult: (_toolName, _result) => {
-                    // 工具结果已包含在消息流中
-                },
-                onError: (error) => {
-                    console.error('[CodingWorkspace] SSE error:', error);
-                    setLogs(prev => [...prev, `[错误] SSE 连接错误: ${error.message}`]);
-                },
-                onComplete: () => {
-                    console.log('[CodingWorkspace] ✅ SSE stream completed');
-                    setAnalyzing(false);
-                    setLogs(prev => [...prev, "[系统] ✅ 需求分析完成！"]);
-
-                    // 刷新计划数据
-                    loadProgress();
-                    initProjectData();
-                }
-            });
-
-            // 5. 发送分析命令 (SSE 流已建立，即使 HTTP 请求超时也会继续)
-            setLogs(prev => [...prev, "[系统] 📤 发送分析任务..."]);
-            console.log('[CodingWorkspace] 📤 Sending cowork command...');
-
-            try {
-                const response = await opencode.sendCoworkCommandStreaming(
-                    session.id,
-                    analyzePrompt,
-                    project.url
-                );
-                console.log('[CodingWorkspace] ✅ Command sent, response:', response);
-                setLogs(prev => [...prev, "[系统] ✅ 任务已提交，等待执行完成..."]);
-            } catch (e: any) {
-                // HTTP 请求失败，但 SSE 流可能还在工作
-                console.warn('[CodingWorkspace] ⚠️ HTTP request failed, but SSE stream continues:', e.message);
-                setLogs(prev => [...prev, `[系统] ⚠️ 任务已通过 SSE 流提交，正在执行...`]);
-            }
-
-        } catch (e: any) {
-            console.error("[CodingWorkspace] Analysis failed:", e);
-            setLogs(prev => [...prev, `[错误] ${e.message || JSON.stringify(e)}`]);
-            setAnalyzing(false);
-        }
+    const handleDevComplete = async () => {
+        setExecuting(false);
+        await loadProgress();
     };
 
     const handleSupplementFromPRD = async () => {
@@ -479,125 +399,6 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
         }
     };
 
-    const handleStartCoding = async () => {
-        setExecuting(true);
-        setLogs(prev => [...prev, "[系统] 开始开发..."]);
-        setActiveTab('code');
-
-        try {
-            // 🔴 使用 opencode CLI 直接调用并订阅 SSE 事件
-            console.log('[CodingWorkspace] 🚀 Starting opencode development...');
-
-            // 1. 检查 opencode 服务器健康
-            const isHealthy = await opencode.checkHealth();
-            if (!isHealthy) {
-                throw new Error('AI 开发服务不可用，请运行: cd local-server && npm run serve');
-            }
-            setLogs(prev => [...prev, "[系统] ✅ 连接AI开发服务成功"]);
-
-            // 2. 创建 session
-            const session = await opencode.createSession(`开发: ${project.name}`);
-            console.log('[CodingWorkspace] ✅ Session created:', session.id);
-            setLogs(prev => [...prev, `[系统] 📋 会话已创建: ${session.id.slice(0, 8)}...`]);
-
-            // 3. 构造开发 prompt
-            const devPrompt = `请执行开发计划 specs/develop_plan.md，并使用 specs/testing_plan.md 进行验证。
-
-项目路径：${project.url}
-
-请：
-1. 按照 develop_plan.md 中的步骤逐一执行
-2. 编写代码、实现功能
-3. 使用 testing_plan.md 验证实现是否正确
-4. 返回开发进度和结果
-
-请使用中文回复，实时报告进度。`;
-
-            // 4. 订阅 SSE 事件实时显示输出
-            setLogs(prev => [...prev, "[系统] 🔄 订阅实时输出..."]);
-            // 清除之前的去重记录
-            lastMessageIds.current.clear();
-
-            opencode.subscribeToSession(session.id, {
-                onMessage: (message) => {
-                    message.parts.forEach(part => {
-                        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-                        if ((part.type === 'text' || part.type === 'reasoning') && (part.text ?? "") && part.id) {
-                            // 去重：检查是否已处理过此消息
-                            if (lastMessageIds.current.has(part.id)) {
-                                return; // 跳过重复消息
-                            }
-                            lastMessageIds.current.add(part.id);
-
-                            setLogs(prev => {
-                                const text = (part.text ?? "").trim();
-                                if (text.length < 5) return prev;
-                                if (text.includes('session') || text.includes('heartbeat')) return prev;
-
-                                // 检查是否与最后一条消息相同（防止连续重复）
-                                if (prev.length > 0 && prev[prev.length - 1]?.includes(text.slice(0, 100))) {
-                                    return prev;
-                                }
-
-                                return [...prev, `[AI] ${text.slice(0, 500)}${text.length > 500 ? '...' : ''}`];
-                            });
-                        }
-                    });
-                },
-                onToolUse: (_toolName, _input) => {
-                    setLogs(prev => [...prev, `[🔧 工具] ${_toolName}`]);
-                },
-                onToolResult: (_toolName, _result) => {
-                    // 工具结果已包含在消息流中
-                },
-                onError: (error) => {
-                    console.error('[CodingWorkspace] SSE error:', error);
-                    setLogs(prev => [...prev, `[错误] SSE 连接错误: ${error.message}`]);
-                },
-                onComplete: () => {
-                    console.log('[CodingWorkspace] ✅ SSE stream completed');
-                    setExecuting(false);
-                    setLogs(prev => [...prev, "[系统] ✅ 开发任务完成！"]);
-
-                    // 刷新进度数据
-                    loadProgress();
-                }
-            });
-
-            // 5. 发送开发命令 (SSE 流已建立，即使 HTTP 请求超时也会继续)
-            setLogs(prev => [...prev, "[系统] 📤 发送开发任务..."]);
-            console.log('[CodingWorkspace] 📤 Sending cowork command...');
-
-            try {
-                const response = await opencode.sendCoworkCommandStreaming(
-                    session.id,
-                    devPrompt,
-                    project.url
-                );
-                console.log('[CodingWorkspace] ✅ Command sent, response:', response);
-                setLogs(prev => [...prev, "[系统] ✅ 任务已提交，执行中..."]);
-            } catch (e: any) {
-                // HTTP 请求失败，但 SSE 流可能还在工作
-                console.warn('[CodingWorkspace] ⚠️ HTTP request failed, but SSE stream continues:', e.message);
-                setLogs(prev => [...prev, `[系统] ⚠️ 任务已通过 SSE 流提交，正在执行...`]);
-            }
-
-        } catch (e: any) {
-            console.error("[CodingWorkspace] Development failed:", e);
-            setLogs(prev => [...prev, `[错误] ${e.message || JSON.stringify(e)}`]);
-            setExecuting(false);
-        }
-    };
-
-    const getStatusColor = (status: string) => {
-        switch (status) {
-            case 'completed': return 'bg-green-500';
-            case 'running': return 'bg-blue-500 animate-pulse';
-            case 'failed': return 'bg-red-500';
-            default: return 'bg-slate-400';
-        }
-    };
-
     return (
         <div className="flex flex-col h-full bg-slate-50 dark:bg-[#1e1e1e] text-slate-900 dark:text-slate-100">
             <div className="h-14 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-[#252526] flex items-center px-4 justify-between shrink-0">
@@ -636,49 +437,71 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
                                 <div className="flex items-center gap-2">
                                     <button disabled={analyzing} onClick={handleAnalyze} className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium bg-gradient-to-r from-orange-500 to-pink-500 text-white ${analyzing ? 'opacity-50' : ''}`}>
                                         <span className={`material-symbols-outlined ${analyzing ? 'animate-spin' : ''}`} style={{ fontSize: '18px' }}>{analyzing ? 'sync' : 'psychology'}</span>
-                                        {analyzing ? '后台分析中...' : '分析需求'}
+                                        {analyzing ? '分析中...' : '分析需求'}
                                     </button>
                                     <button disabled={supplementing || !prdFilePath.trim()} onClick={handleSupplementFromPRD} className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium bg-gradient-to-r from-blue-500 to-indigo-500 text-white ${supplementing || !prdFilePath.trim() ? 'opacity-50' : ''}`}>
                                         <span className={`material-symbols-outlined ${supplementing ? 'animate-spin' : ''}`} style={{ fontSize: '18px' }}>{supplementing ? 'sync' : 'add_circle'}</span>
                                         {supplementing ? '补充中...' : '补充计划'}
                                     </button>
                                 </div>
-                                {analyzing && taskStatus && (
-                                    <div className="flex items-center gap-2 mt-2">
-                                        <span className={`w-2 h-2 rounded-full ${getStatusColor(taskStatus.status)}`}></span>
-                                        <span className="text-xs text-slate-500">{taskStatus.message} ({taskStatus.progress}%)</span>
-                                    </div>
-                                )}
                             </div>
                             <div className="p-2 border-b border-slate-200 dark:border-slate-800">
                                 <input type="text" value={prdFilePath} onChange={(e) => setPrdFilePath(e.target.value)} placeholder="PRD 文件路径..." className="w-full px-3 py-1.5 rounded-md text-xs border border-slate-300 dark:border-slate-600 bg-white dark:bg-gray-700" />
                             </div>
                             <textarea className="flex-1 w-full bg-transparent p-4 text-sm font-mono resize-none focus:outline-none" value={prdContent} onChange={(e) => setPrdContent(e.target.value)} placeholder="在此输入项目需求..." />
                         </div>
-                        <div className="flex-1 flex flex-col min-w-0 bg-white dark:bg-[#1e1e1e]">
-                            <div className="flex-1 flex flex-col border-b border-slate-200 dark:border-slate-800 min-h-0">
-                                <div className="p-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#252526] flex justify-between items-center">
-                                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">开发计划</h3>
-                                    <div className="flex items-center gap-2">
-                                        {devPlanModified && <span className="text-xs text-orange-500">已修改</span>}
-                                        <button onClick={handleSaveDevPlan} disabled={!devPlanModified || isSaving} className={`px-2 py-1 text-xs rounded ${devPlanModified ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-slate-200 dark:bg-slate-700 text-slate-400'}`}>
-                                            {isSaving ? '保存中...' : '保存'}
-                                        </button>
-                                    </div>
+                        <div className="flex-1 flex flex-col min-w-0">
+                            {showAnalysisTerminal && analysisSessionId && (
+                                <div className="h-1/2 flex flex-col border-b border-slate-200 dark:border-slate-800 shrink-0">
+                                    <AutoTerminalPanel
+                                        sessionId={analysisSessionId}
+                                        projectPath={project.url}
+                                        prompt={`请分析以下需求并生成开发计划和测试计划：
+
+需求描述：${prdContent || project.prompt}
+
+项目路径：${project.url}
+
+请：
+1. 分析需求并生成详细的开发计划 (specs/develop_plan.md)
+2. 生成对应的测试计划 (specs/testing_plan.md)
+3. 返回完整的计划和测试用例
+
+请使用中文回复。`}
+                                        title="AI 需求分析中..."
+                                        onComplete={handleAnalysisComplete}
+                                        onClose={() => {
+                                            setShowAnalysisTerminal(false);
+                                            setAnalysisSessionId(null);
+                                        }}
+                                    />
                                 </div>
-                                <textarea className="flex-1 w-full bg-transparent p-4 text-sm font-mono resize-none focus:outline-none" value={devPlan} onChange={(e) => { setDevPlan(e.target.value); setDevPlanModified(true); }} placeholder="开发计划..." />
-                            </div>
-                            <div className="flex-1 flex flex-col min-h-0">
-                                <div className="p-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#252526] flex justify-between items-center">
-                                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">测试计划</h3>
-                                    <div className="flex items-center gap-2">
-                                        {testPlanModified && <span className="text-xs text-orange-500">已修改</span>}
-                                        <button onClick={handleSaveTestPlan} disabled={!testPlanModified || isSaving} className={`px-2 py-1 text-xs rounded ${testPlanModified ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-slate-200 dark:bg-slate-700 text-slate-400'}`}>
-                                            {isSaving ? '保存中...' : '保存'}
-                                        </button>
+                            )}
+                            <div className="flex-1 flex flex-col min-w-0 bg-white dark:bg-[#1e1e1e]">
+                                <div className="flex-1 flex flex-col border-b border-slate-200 dark:border-slate-800 min-h-0">
+                                    <div className="p-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#252526] flex justify-between items-center">
+                                        <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">开发计划</h3>
+                                        <div className="flex items-center gap-2">
+                                            {devPlanModified && <span className="text-xs text-orange-500">已修改</span>}
+                                            <button onClick={handleSaveDevPlan} disabled={!devPlanModified || isSaving} className={`px-2 py-1 text-xs rounded ${devPlanModified ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-slate-200 dark:bg-slate-700 text-slate-400'}`}>
+                                                {isSaving ? '保存中...' : '保存'}
+                                            </button>
+                                        </div>
                                     </div>
+                                    <textarea className="flex-1 w-full bg-transparent p-4 text-sm font-mono resize-none focus:outline-none" value={devPlan} onChange={(e) => { setDevPlan(e.target.value); setDevPlanModified(true); }} placeholder="开发计划..." />
                                 </div>
-                                <textarea className="flex-1 w-full bg-transparent p-4 text-sm font-mono resize-none focus:outline-none" value={testPlan} onChange={(e) => { setTestPlan(e.target.value); setTestPlanModified(true); }} placeholder="测试计划..." />
+                                <div className="flex-1 flex flex-col min-h-0">
+                                    <div className="p-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#252526] flex justify-between items-center">
+                                        <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">测试计划</h3>
+                                        <div className="flex items-center gap-2">
+                                            {testPlanModified && <span className="text-xs text-orange-500">已修改</span>}
+                                            <button onClick={handleSaveTestPlan} disabled={!testPlanModified || isSaving} className={`px-2 py-1 text-xs rounded ${testPlanModified ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-slate-200 dark:bg-slate-700 text-slate-400'}`}>
+                                                {isSaving ? '保存中...' : '保存'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <textarea className="flex-1 w-full bg-transparent p-4 text-sm font-mono resize-none focus:outline-none" value={testPlan} onChange={(e) => { setTestPlan(e.target.value); setTestPlanModified(true); }} placeholder="测试计划..." />
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -772,10 +595,31 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
                                 开始开发
                             </button>
                         </div>
-                        <div className="flex-1 bg-[#1e1e1e] p-4 overflow-y-auto font-mono text-xs text-slate-300">
-                            {logs.length === 0 && <span className="text-slate-600 italic">日志将显示在这里...</span>}
-                            {logs.map((log, i) => <div key={i} className="mb-1 border-b border-white/5 pb-1">{log}</div>)}
-                            <div ref={logsEndRef} />
+                        <div className="flex-1">
+                            {devSessionId ? (
+                                <AutoTerminalPanel
+                                    sessionId={devSessionId}
+                                    projectPath={project.url}
+                                    prompt={`请执行开发计划 specs/develop_plan.md，并使用 specs/testing_plan.md 进行验证。
+
+项目路径：${project.url}
+
+请：
+1. 按照 develop_plan.md 中的步骤逐一执行
+2. 编写代码、实现功能
+3. 使用 testing_plan.md 验证实现是否正确
+4. 返回开发进度和结果
+
+请使用中文回复，实时报告进度。`}
+                                    title="AI 开发中..."
+                                    onComplete={handleDevComplete}
+                                    onClose={() => setDevSessionId(null)}
+                                />
+                            ) : (
+                                <div className="flex-1 bg-[#1e1e1e] p-4 overflow-y-auto font-mono text-xs text-slate-500 text-center">
+                                    点击"开始开发"按钮启动 AI 开发任务
+                                </div>
+                            )}
                         </div>
                     </div>
                 )}
