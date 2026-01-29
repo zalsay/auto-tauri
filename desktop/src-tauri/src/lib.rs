@@ -19,10 +19,99 @@ use infra::parser::{extract_tasks_from_prd, supplement_plan_from_prd, supplement
 
 use infra::planner::{generate_dev_plan, generate_test_plan, read_skill_content, save_plan_file, read_plan_file, check_plan_files, PlanFilesStatus};
 use infra::task_manager::{start_analysis_task, get_task_status, get_task_by_id, cancel_task, AnalysisTask, TaskStatus};
+use tauri::Emitter;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+/// Execute a shell command and return output
+#[tauri::command]
+async fn execute_command(command: String, working_dir: String) -> Result<String, String> {
+    use tokio::process::Command;
+
+    info!("Executing command: {} in {}", command, working_dir);
+
+    let output = Command::new("bash")
+        .arg("-c")
+        .arg(&command)
+        .current_dir(working_dir)
+        .output()
+        .await
+        .map_err(|e| format!("执行命令失败: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    let mut result = String::new();
+
+    if !stdout.is_empty() {
+        result.push_str(&stdout);
+    }
+
+    if !stderr.is_empty() {
+        if !result.is_empty() {
+            result.push_str("\n");
+        }
+        result.push_str(&format!("Error: {}", stderr));
+    }
+
+    if result.is_empty() {
+        result = "命令执行完成（无输出）".to_string();
+    }
+
+    Ok(result)
+}
+
+/// Execute a command and stream output to frontend via events
+#[tauri::command]
+async fn execute_command_stream(
+    window: tauri::Window,
+    command: String,
+    working_dir: String,
+    event_id: String,
+) -> Result<(), String> {
+    use tokio::process::Command as AsyncCommand;
+    use tokio::io::{AsyncBufReadExt, BufReader as AsyncBufReader};
+
+    info!("Streaming command: {} in {}", command, working_dir);
+
+    let mut child = AsyncCommand::new("bash")
+        .arg("-c")
+        .arg(&command)
+        .current_dir(working_dir)
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("启动命令失败: {}", e))?;
+
+    let stdout = child.stdout.take().unwrap();
+    let mut reader = AsyncBufReader::new(stdout);
+
+    let mut line = String::new();
+    while let Ok(n) = reader.read_line(&mut line).await {
+        if n == 0 {
+            break;
+        }
+        let output = line.trim().to_string();
+        if !output.is_empty() {
+            let _ = window.emit(&event_id, serde_json::json!({
+                "type": "output",
+                "content": output
+            }));
+        }
+        line.clear();
+    }
+
+    let status = child.wait().await.map_err(|e| format!("等待命令完成失败: {}", e))?;
+    let exit_code = status.code().unwrap_or(-1);
+
+    let _ = window.emit(&event_id, serde_json::json!({
+        "type": "complete",
+        "exit_code": exit_code
+    }));
+
+    Ok(())
 }
 
 /// Spawn an OpenCode task for a specific file
@@ -83,7 +172,9 @@ pub fn run() {
             start_analysis_task,
             get_task_status,
             get_task_by_id,
-            cancel_task
+            cancel_task,
+            execute_command,
+            execute_command_stream
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -5,3 +5,6 @@ desktop/src-tauri/binaries/
 server/server_bin
 binaries/
 test.py
+
+esp32_venv/
+venv/

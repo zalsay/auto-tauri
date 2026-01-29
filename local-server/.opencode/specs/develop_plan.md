@@ -1,29 +1,154 @@
-### Step 1: 项目初始化与环境准备
-创建项目目录结构，安装必要的Python依赖包：requests（网络请求）、pandas（数据处理）、openpyxl（Excel操作）、schedule（定时任务）、beautifulsoup4（HTML解析）
+### Step 1: 项目初始化
+创建项目目录并初始化 Python 虚拟环境：
+```bash
+mkdir zhihu-ai-hot
+cd zhihu-ai-hot
+python3 -m venv venv
+source venv/bin/activate
+pip install requests beautifulsoup4 openpyxl apscheduler
+```
 
-### Step 2: 数据结构设计
-定义文章数据结构，包含标题、链接、发布时间、获取时间等字段。创建Article类来封装文章信息，确保数据结构的一致性
+### Step 2: 项目结构创建
+建立以下目录结构：
+```
+zhihu-ai-hot/
+├── src/
+│   ├── __init__.py
+│   ├── crawler.py      # 知乎爬虫模块
+│   ├── excel_handler.py # Excel 操作模块
+│   └── scheduler.py    # 定时任务模块
+├── data/               # Excel 存储目录
+├── tests/
+├── main.py             # 入口文件
+└── requirements.txt
+```
 
-### Step 3: 知乎爬虫模块实现
-实现ZhihuSpider类，使用requests和BeautifulSoup获取知乎热门AI页面内容，解析文章标题和链接，处理反爬虫机制（请求头、延迟等）
+### Step 3: 知乎热门AI爬虫实现
+在 `src/crawler.py` 中实现爬虫逻辑：
+```python
+import requests
+from bs4 import BeautifulSoup
+import logging
 
-### Step 4: Excel操作模块实现
-创建ExcelHandler类，实现文章的Excel存储功能，包括创建工作簿、写入表头、追加文章数据、格式化单元格等操作
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-### Step 5: 定时任务调度实现
-使用schedule库实现每日定时执行功能，配置执行时间（如每天上午9点），添加任务执行状态记录和异常处理
+def get_zhihu_ai_hot_articles():
+    url = "https://www.zhihu.com/api/v4/creators/rank/hot"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        articles = []
+        for item in data.get("data", [])[:10]:
+            articles.append({
+                "title": item.get("target", {}).get("title", ""),
+                "url": f"https://www.zhihu.com/question/{item.get('target', {}).get('question_id', '')}"
+            })
+        return articles
+    except Exception as e:
+        logger.error(f"爬取失败: {e}")
+        return []
+```
 
-### Step 6: 主程序逻辑整合
-创建main.py作为程序入口，整合爬虫、Excel操作、定时任务模块，实现完整的业务逻辑流程
+### Step 4: Excel 写入模块实现
+在 `src/excel_handler.py` 中实现：
+```python
+from openpyxl import Workbook
+from datetime import datetime
+import os
 
-### Step 7: 配置文件管理
-创建config.py文件管理配置参数，如知乎URL、请求头、定时执行时间、Excel文件路径等，便于后期维护和调整
+def save_to_excel(articles, filepath="data/zhihu_ai_hot.xlsx"):
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "AI热门文章"
+    ws.append(["序号", "标题", "链接", "采集时间"])
+    for i, article in enumerate(articles, 1):
+        ws.append([i, article["title"], article["url"], datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+    ws.column_dimensions['B'].width = 80
+    ws.column_dimensions['C'].width = 50
+    wb.save(filepath)
+    print(f"已保存 {len(articles)} 条记录到 {filepath}")
+```
 
-### Step 8: 错误处理与日志记录
-实现完善的异常处理机制，添加日志记录功能，记录程序执行状态、错误信息、任务完成情况，便于问题排查和监控
+### Step 5: 定时任务模块实现
+在 `src/scheduler.py` 中使用 APScheduler：
+```python
+from apscheduler.schedulers.blocking import BlockingScheduler
+from crawler import get_zhihu_ai_hot_articles
+from excel_handler import save_to_excel
 
-### Step 9: 程序启动与守护进程
-创建启动脚本，实现程序的持续运行，使用适当的进程管理方式确保定时任务的稳定执行
+def daily_task():
+    print(f"开始执行任务: {datetime.now()}")
+    articles = get_zhihu_ai_hot_articles()
+    if articles:
+        save_to_excel(articles)
+    else:
+        print("未获取到文章数据")
 
-### Step 10: 功能测试与验证
-编写测试用例验证各个模块功能，进行端到端测试，确保爬虫能够正确获取文章、Excel文件能够正确存储、定时任务能够按时执行
+def start_scheduler(hour=9, minute=0):
+    scheduler = BlockingScheduler()
+    scheduler.add_job(daily_task, 'cron', hour=hour, minute=minute)
+    print(f"定时任务已启动，每天 {hour:02d}:{minute:02d} 执行")
+    scheduler.start()
+```
+
+### Step 6: 命令行参数支持
+在 `main.py` 中实现 CLI：
+```python
+import argparse
+from crawler import get_zhihu_ai_hot_articles
+from excel_handler import save_to_excel
+from scheduler import start_scheduler
+
+def main():
+    parser = argparse.ArgumentParser(description="知乎热门AI文章采集工具")
+    parser.add_argument("--schedule", action="store_true", help="启用定时任务模式")
+    parser.add_argument("--hour", type=int, default=9, help="定时任务执行小时(默认9)")
+    parser.add_argument("--minute", type=int, default=0, help="定时任务执行分钟(默认0)")
+    args = parser.parse_args()
+
+    if args.schedule:
+        start_scheduler(args.hour, args.minute)
+    else:
+        articles = get_zhihu_ai_hot_articles()
+        save_to_excel(articles)
+
+if __name__ == "__main__":
+    main()
+```
+
+### Step 7: requirements.txt 编写
+```
+requests==2.31.0
+beautifulsoup4==4.12.2
+openpyxl==3.1.2
+APScheduler==3.10.4
+```
+
+### Step 8: 测试用例编写
+在 `tests/test_crawler.py` 中：
+```python
+import pytest
+from src.crawler import get_zhihu_ai_hot_articles
+
+def test_get_articles():
+    articles = get_zhihu_ai_hot_articles()
+    assert isinstance(articles, list)
+    assert len(articles) <= 10
+    if articles:
+        assert "title" in articles[0]
+        assert "url" in articles[0]
+```
+
+### Step 9: 测试与验证
+```bash
+source venv/bin/activate
+pytest tests/ -v
+python main.py
+ls -la data/
+open data/zhihu_ai_hot.xlsx
+python main.py --schedule
+```

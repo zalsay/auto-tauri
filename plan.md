@@ -103,6 +103,14 @@ github： git@github.com:zalsay/auto-tauri.git
 - [ ] **前端界面升级**
   - 仪表盘「开始新任务」改为「创建新项目」。
   - 增加「项目列表」页面，每个项目提供「立即执行」按钮。
+- [x] **工程修复**
+  - 修复 CodingProjectWorkspace 的 apiRequest 引用来源，恢复 OSS 同步流程。
+ - [x] **原型文档沉淀**
+  - 输出学生端晚点名签到原型的 Markdown 说明文档。
+ - [x] **原型文档增强**
+  - 补充交互流程图与字段表，形成 test2.md。
+ - [x] **流程图渲染与技能沉淀**
+  - 渲染 Mermaid 为 SVG，并在 _skills 中整理技能文档。
 
 ### 第六阶段：Playwright Agent 对话式代码生成器（进行中）
 - [x] **Agent 核心模块** (`playwright-agent/`)

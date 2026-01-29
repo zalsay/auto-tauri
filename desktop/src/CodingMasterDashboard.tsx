@@ -144,8 +144,14 @@ export default function CodingMasterDashboard({ projectPath, onClose }: Props) {
 
         setIsSubmitting(true);
         try {
+            console.log('[CodingMaster] 🚀 Starting QuickFix task...');
+            console.log('[CodingMaster] 📝 Prompt:', quickFixPrompt);
+            console.log('[CodingMaster] 📁 Project path:', projectPath);
+
             // 1. Create Session
+            console.log('[CodingMaster] 📋 Creating session...');
             const session = await opencode.createSession(`QuickFix: ${quickFixFile ? quickFixFile : 'General Task'}`);
+            console.log('[CodingMaster] ✅ Session created:', session.id);
             setActiveSessionId(session.id);
 
             // 2. Construct Prompt
@@ -153,20 +159,27 @@ export default function CodingMasterDashboard({ projectPath, onClose }: Props) {
             if (quickFixFile) {
                 finalPrompt = `Context: ${quickFixFile}\nTask: ${quickFixPrompt}`;
             }
+            console.log('[CodingMaster] 🎯 Final prompt:', finalPrompt.slice(0, 200) + (finalPrompt.length > 200 ? '...' : ''));
 
             // 3. Send Cowork Command (Streaming is handled by Chat component via SSE)
             // But we need to trigger the initial command.
             // Wait a brief moment for Chat component to mount and subscribe
+            console.log('[CodingMaster] ⏳ Waiting 500ms for SSE subscription before sending command...');
             setTimeout(() => {
+                console.log('[CodingMaster] 📤 Sending cowork command...');
                 opencode.sendCoworkCommandStreaming(
                     session.id,
                     finalPrompt,
                     projectPath
-                ).catch(err => console.error("Components trigger error:", err));
+                ).then(result => {
+                    console.log('[CodingMaster] ✅ Command sent successfully, result:', result);
+                }).catch(err => {
+                    console.error('[CodingMaster] ❌ Command failed:', err);
+                });
             }, 500);
 
         } catch (err: any) {
-            console.error("Quick fix failed:", err);
+            console.error("[CodingMaster] ❌ Quick fix failed:", err);
             alert(`Failed to start task: ${err.message}`);
         } finally {
             setIsSubmitting(false);

@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from "@tauri-apps/api/core";
-import { apiRequest } from '../ossUpload';
+import { apiRequest } from '../api';
+import { downloadFromOSS, uploadTextToOSS } from '../ossUpload';
+import * as opencode from "../opencodeService";
 
 
 interface Project {
@@ -9,6 +11,11 @@ interface Project {
     url: string;
     prompt: string;
     type: string;
+}
+
+interface RemoteProjectPlan {
+    devPlan?: string;
+    testPlan?: string;
 }
 
 interface DevelopmentStep {
@@ -58,6 +65,9 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
     const [logs, setLogs] = useState<string[]>([]);
     const logsEndRef = useRef<HTMLDivElement>(null);
 
+    // 用于 SSE 消息去重
+    const lastMessageIds = useRef<Set<string>>(new Set());
+
     // Load saved plans and check task status on mount
     useEffect(() => {
         if (project.prompt) {
@@ -71,10 +81,11 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
     const initProjectData = async () => {
         const { dev: localDev, test: localTest } = await loadSavedPlans(); // Load local first for speed
         await loadProgress();
+        await syncPlansWithOSS(localDev, localTest);
 
         // Sync with Backend (DB/Redis)
         try {
-            const remoteProject = await apiRequest(`/api/v1/projects/${project.id}`);
+            const remoteProject = await apiRequest(`/api/v1/projects/${project.id}`) as RemoteProjectPlan | null;
             if (remoteProject) {
                 const remoteDev = remoteProject.devPlan || "";
                 const remoteTest = remoteProject.testPlan || "";
@@ -305,15 +316,109 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
         setActiveTab('code');
 
         try {
-            await invoke('start_analysis_task', {
-                projectName: project.name,
-                projectPath: project.url,
-                taskDescription: prdContent || project.prompt
+            // 🔴 使用 opencode CLI 直接调用并订阅 SSE 事件
+            console.log('[CodingWorkspace] 🚀 Starting opencode analysis...');
+
+            // 1. 检查 opencode 服务器健康
+            const isHealthy = await opencode.checkHealth();
+            if (!isHealthy) {
+                throw new Error('AI 开发服务不可用，请运行: cd local-server && npm run serve');
+            }
+            setLogs(prev => [...prev, "[系统] ✅ 连接AI开发服务成功"]);
+
+            // 2. 创建 session
+            const session = await opencode.createSession(`需求分析: ${project.name}`);
+            console.log('[CodingWorkspace] ✅ Session created:', session.id);
+            setLogs(prev => [...prev, `[系统] 📋 会话已创建: ${session.id.slice(0, 8)}...`]);
+
+            // 3. 构造分析 prompt
+            const analyzePrompt = `请分析以下需求并生成开发计划和测试计划：
+
+需求描述：${prdContent || project.prompt}
+
+项目路径：${project.url}
+
+请：
+1. 分析需求并生成详细的开发计划 (specs/develop_plan.md)
+2. 生成对应的测试计划 (specs/testing_plan.md)
+3. 返回完整的计划和测试用例
+
+请使用中文回复。`;
+
+            // 4. 订阅 SSE 事件实时显示输出
+            setLogs(prev => [...prev, "[系统] 🔄 订阅实时输出..."]);
+            // 清除之前的去重记录
+            lastMessageIds.current.clear();
+
+            opencode.subscribeToSession(session.id, {
+                onMessage: (message) => {
+                    message.parts.forEach(part => {
+                        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+                        if ((part.type === 'text' || part.type === 'reasoning') && (part.text ?? "") && part.id) {
+                            // 去重：检查是否已处理过此消息
+                            if (lastMessageIds.current.has(part.id)) {
+                                return; // 跳过重复消息
+                            }
+                            lastMessageIds.current.add(part.id);
+
+                            setLogs(prev => {
+                                // 过滤掉系统消息，只显示有意义的输出
+                                const text = (part.text ?? "").trim();
+                                if (text.length < 5) return prev;
+                                if (text.includes('session') || text.includes('heartbeat')) return prev;
+
+                                // 检查是否与最后一条消息相同（防止连续重复）
+                                if (prev.length > 0 && prev[prev.length - 1]?.includes(text.slice(0, 100))) {
+                                    return prev;
+                                }
+
+                                return [...prev, `[AI] ${text.slice(0, 500)}${text.length > 500 ? '...' : ''}`];
+                            });
+                        }
+                    });
+                },
+                onToolUse: (_toolName, _input) => {
+                    setLogs(prev => [...prev, `[🔧 工具] ${_toolName}`]);
+                },
+                onToolResult: (_toolName, _result) => {
+                    // 工具结果已包含在消息流中
+                },
+                onError: (error) => {
+                    console.error('[CodingWorkspace] SSE error:', error);
+                    setLogs(prev => [...prev, `[错误] SSE 连接错误: ${error.message}`]);
+                },
+                onComplete: () => {
+                    console.log('[CodingWorkspace] ✅ SSE stream completed');
+                    setAnalyzing(false);
+                    setLogs(prev => [...prev, "[系统] ✅ 需求分析完成！"]);
+
+                    // 刷新计划数据
+                    loadProgress();
+                    initProjectData();
+                }
             });
-            setLogs(prev => [...prev, "[系统] 任务已在后台启动，离开页面后继续执行"]);
-        } catch (e) {
-            console.error("Analysis failed:", e);
-            setLogs(prev => [...prev, `[错误] ${JSON.stringify(e)}`]);
+
+            // 5. 发送分析命令 (SSE 流已建立，即使 HTTP 请求超时也会继续)
+            setLogs(prev => [...prev, "[系统] 📤 发送分析任务..."]);
+            console.log('[CodingWorkspace] 📤 Sending cowork command...');
+
+            try {
+                const response = await opencode.sendCoworkCommandStreaming(
+                    session.id,
+                    analyzePrompt,
+                    project.url
+                );
+                console.log('[CodingWorkspace] ✅ Command sent, response:', response);
+                setLogs(prev => [...prev, "[系统] ✅ 任务已提交，等待执行完成..."]);
+            } catch (e: any) {
+                // HTTP 请求失败，但 SSE 流可能还在工作
+                console.warn('[CodingWorkspace] ⚠️ HTTP request failed, but SSE stream continues:', e.message);
+                setLogs(prev => [...prev, `[系统] ⚠️ 任务已通过 SSE 流提交，正在执行...`]);
+            }
+
+        } catch (e: any) {
+            console.error("[CodingWorkspace] Analysis failed:", e);
+            setLogs(prev => [...prev, `[错误] ${e.message || JSON.stringify(e)}`]);
             setAnalyzing(false);
         }
     };
@@ -380,12 +485,106 @@ export default function CodingProjectWorkspace({ project, onBack }: CodingProjec
         setActiveTab('code');
 
         try {
-            const prompt = `Execute the development plan at specs/develop_plan.md. Verify using specs/testing_plan.md. Context: ${project.url}`;
-            await invoke('smart_dispatch_task', { taskDescription: prompt, projectPath: project.url });
-            setLogs(prev => [...prev, "[系统] 任务已分发"]);
-        } catch (e) {
-            setLogs(prev => [...prev, `[错误] ${JSON.stringify(e)}`]);
-        } finally {
+            // 🔴 使用 opencode CLI 直接调用并订阅 SSE 事件
+            console.log('[CodingWorkspace] 🚀 Starting opencode development...');
+
+            // 1. 检查 opencode 服务器健康
+            const isHealthy = await opencode.checkHealth();
+            if (!isHealthy) {
+                throw new Error('AI 开发服务不可用，请运行: cd local-server && npm run serve');
+            }
+            setLogs(prev => [...prev, "[系统] ✅ 连接AI开发服务成功"]);
+
+            // 2. 创建 session
+            const session = await opencode.createSession(`开发: ${project.name}`);
+            console.log('[CodingWorkspace] ✅ Session created:', session.id);
+            setLogs(prev => [...prev, `[系统] 📋 会话已创建: ${session.id.slice(0, 8)}...`]);
+
+            // 3. 构造开发 prompt
+            const devPrompt = `请执行开发计划 specs/develop_plan.md，并使用 specs/testing_plan.md 进行验证。
+
+项目路径：${project.url}
+
+请：
+1. 按照 develop_plan.md 中的步骤逐一执行
+2. 编写代码、实现功能
+3. 使用 testing_plan.md 验证实现是否正确
+4. 返回开发进度和结果
+
+请使用中文回复，实时报告进度。`;
+
+            // 4. 订阅 SSE 事件实时显示输出
+            setLogs(prev => [...prev, "[系统] 🔄 订阅实时输出..."]);
+            // 清除之前的去重记录
+            lastMessageIds.current.clear();
+
+            opencode.subscribeToSession(session.id, {
+                onMessage: (message) => {
+                    message.parts.forEach(part => {
+                        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+                        if ((part.type === 'text' || part.type === 'reasoning') && (part.text ?? "") && part.id) {
+                            // 去重：检查是否已处理过此消息
+                            if (lastMessageIds.current.has(part.id)) {
+                                return; // 跳过重复消息
+                            }
+                            lastMessageIds.current.add(part.id);
+
+                            setLogs(prev => {
+                                const text = (part.text ?? "").trim();
+                                if (text.length < 5) return prev;
+                                if (text.includes('session') || text.includes('heartbeat')) return prev;
+
+                                // 检查是否与最后一条消息相同（防止连续重复）
+                                if (prev.length > 0 && prev[prev.length - 1]?.includes(text.slice(0, 100))) {
+                                    return prev;
+                                }
+
+                                return [...prev, `[AI] ${text.slice(0, 500)}${text.length > 500 ? '...' : ''}`];
+                            });
+                        }
+                    });
+                },
+                onToolUse: (_toolName, _input) => {
+                    setLogs(prev => [...prev, `[🔧 工具] ${_toolName}`]);
+                },
+                onToolResult: (_toolName, _result) => {
+                    // 工具结果已包含在消息流中
+                },
+                onError: (error) => {
+                    console.error('[CodingWorkspace] SSE error:', error);
+                    setLogs(prev => [...prev, `[错误] SSE 连接错误: ${error.message}`]);
+                },
+                onComplete: () => {
+                    console.log('[CodingWorkspace] ✅ SSE stream completed');
+                    setExecuting(false);
+                    setLogs(prev => [...prev, "[系统] ✅ 开发任务完成！"]);
+
+                    // 刷新进度数据
+                    loadProgress();
+                }
+            });
+
+            // 5. 发送开发命令 (SSE 流已建立，即使 HTTP 请求超时也会继续)
+            setLogs(prev => [...prev, "[系统] 📤 发送开发任务..."]);
+            console.log('[CodingWorkspace] 📤 Sending cowork command...');
+
+            try {
+                const response = await opencode.sendCoworkCommandStreaming(
+                    session.id,
+                    devPrompt,
+                    project.url
+                );
+                console.log('[CodingWorkspace] ✅ Command sent, response:', response);
+                setLogs(prev => [...prev, "[系统] ✅ 任务已提交，执行中..."]);
+            } catch (e: any) {
+                // HTTP 请求失败，但 SSE 流可能还在工作
+                console.warn('[CodingWorkspace] ⚠️ HTTP request failed, but SSE stream continues:', e.message);
+                setLogs(prev => [...prev, `[系统] ⚠️ 任务已通过 SSE 流提交，正在执行...`]);
+            }
+
+        } catch (e: any) {
+            console.error("[CodingWorkspace] Development failed:", e);
+            setLogs(prev => [...prev, `[错误] ${e.message || JSON.stringify(e)}`]);
             setExecuting(false);
         }
     };

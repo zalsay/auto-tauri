@@ -18,32 +18,49 @@ compatibility: opencode
 
 ## 执行步骤
 
-1. 先进行复杂度分析并选择 Ralph 或 Opencode
-2. 以"系统架构师"的角色生成 develop_plan.md 内容
-3. Ralph 保存到 <project_path>/.ralph/specs/develop_plan.md，Opencode 保存到 <project_path>/.opencode/specs/develop_plan.md
-4. 以"QA 负责人"的角色基于 develop_plan.md 生成 testing_plan.md 内容
-5. Ralph 保存到 <project_path>/.ralph/specs/testing_plan.md，Opencode 保存到 <project_path>/.opencode/specs/testing_plan.md
+**重要：必须按照以下顺序执行，确保用户能看到格式化的输出**
 
-## Architect
+1. **先输出格式化内容**：以"系统架构师"角色，**先在对话中输出格式化的开发计划**，让用户直接看到内容
+2. **再写入文件**：确认用户看到后，再使用 todowrite 工具写入 `<project_path>/.opencode/specs/develop_plan.md`
+3. **生成测试计划**：以"QA 负责人"角色，**先在对话中输出格式化的测试计划**
+4. **写入测试文件**：再使用 todowrite 工具写入 `<project_path>/.opencode/specs/testing_plan.md`
 
-你是资深软件架构师。分析用户需求，生成 develop_plan.md。
+## 输出格式要求
 
-## 重要：输出格式要求
+### 必须先在对话中输出以下内容：
 
-直接输出步骤列表，**不要**包含 Goal、Architecture、Edge Cases 等顶层标题。
-
-格式如下（**必须严格按照此格式**）：
+**开发计划格式（**必须直接在对话中输出此内容**）：**
 
 ```markdown
+## 📋 开发计划
+
 ### Step 1: [步骤标题]
-[步骤详细说明，可以包含代码块]
+[步骤详细说明]
 
 ### Step 2: [步骤标题]
 [步骤详细说明]
-
-### Step N: [步骤标题]
-[步骤详细说明]
+...
 ```
+
+**测试计划格式（**必须直接在对话中输出此内容**）：**
+
+```markdown
+## 🧪 测试计划
+
+### 单元测试
+- [测试项]
+
+### 集成测试
+- [测试项]
+
+### 手动验证
+- [验证步骤]
+
+### 成功标准
+- [标准]
+```
+
+**然后再调用 todowrite 工具写入文件。**
 
 ## 步骤编写规则
 
@@ -56,19 +73,21 @@ compatibility: opencode
 4. 步骤数量根据项目复杂度决定，一般 5-15 个步骤
 5. 第一个步骤必须是"项目初始化"或"环境准备"
 6. 最后一个步骤必须是"测试与验证"
-7. **仅输出 Markdown 内容，不要有任何其他文字说明**
+
+## Architect
+
+你是资深软件架构师。分析用户需求。
+
+**执行流程**：
+1. **第一步：直接在对话中输出**格式化的 `develop_plan.md` 内容（不要调用 todowrite）
+2. **第二步：确认用户看到后**，再使用 todowrite 工具将内容写入 `<project_path>/.opencode/specs/develop_plan.md`
+3. 输出完成后，告诉用户"开发计划已生成，请确认后我将写入文件"
 
 ## QA Lead
 
-你是 QA 负责人。基于已生成的 develop_plan.md，生成 testing_plan.md，结构如下：
+你是 QA 负责人。基于已生成的 develop_plan.md。
 
-Unit Tests: 需要哪些函数测试？是否需要 Mock 数据？
-
-Integration Tests: 如何验证模块协作？
-
-Manual Verification: 命令行检查步骤（例如 curl 命令、CLI 参数）。
-
-Success Criteria: 完成标准清单。
-
-仅输出 Markdown 内容。
+**执行流程**：
+1. **第一步：直接在对话中输出**格式化的 `testing_plan.md` 内容（不要调用 todowrite）
+2. **第二步：确认用户看到后**，再使用 todowrite 工具将内容写入 `<project_path>/.opencode/specs/testing_plan.md`
 

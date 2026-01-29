@@ -29,6 +29,7 @@ export interface OpencodeMessage {
 }
 
 export interface MessagePart {
+    id?: string;
     type: 'text' | 'tool_use' | 'tool_result' | 'reasoning';
     text?: string;
     toolName?: string;
@@ -209,15 +210,15 @@ export async function sendMessageStreaming(
 ): Promise<OpencodeMessage | null> {
     const url = `${getOpencodeServerUrl()}/session/${sessionId}/message`;
     const startTime = Date.now();
-    console.log(`[Opencode] POST (streaming) ${url}`);
-    console.log(`[Opencode] Request body:`, JSON.stringify({ parts: [{ type: 'text', text: text.slice(0, 100) + (text.length > 100 ? '...' : '') }] }));
+    console.log('[Opencode] 🚀 POST (streaming) to', url);
+    console.log('[Opencode] 📝 Request body:', JSON.stringify({ parts: [{ type: 'text', text: text.slice(0, 100) + (text.length > 100 ? '...' : '') }] }, null, 2));
 
-    // Set a long timeout (30 minutes) for AI tasks
+    // Set a very long timeout (60 minutes) for AI tasks - opencode runs async via SSE
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
-        console.warn(`[Opencode] Request timeout after 30 minutes for session ${sessionId}`);
-        controller.abort();
-    }, 30 * 60 * 1000);
+        console.warn(`[Opencode] ⏰ Request timeout after 60 minutes for session ${sessionId} (continuing via SSE)`);
+        // Don't abort - let the SSE stream continue, just log a warning
+    }, 60 * 60 * 1000);
 
     try {
         const response = await fetch(url, {
@@ -228,21 +229,21 @@ export async function sendMessageStreaming(
         });
         clearTimeout(timeoutId);
         const duration = Date.now() - startTime;
-        console.log(`[Opencode] Streaming response status: ${response.status} in ${duration}ms`);
+        console.log(`[Opencode] 📊 Streaming response status: ${response.status} in ${duration}ms`);
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error(`[Opencode] Streaming error response:`, errorText);
+            console.error(`[Opencode] ❌ Streaming error response:`, errorText);
             throw new Error(`Request failed: ${response.status}`);
         }
 
         const data = await response.json();
-        console.log(`[Opencode] Streaming success in ${duration}ms`);
+        console.log(`[Opencode] ✅ Streaming response received in ${duration}ms:`, JSON.stringify(data, null, 2));
         return data;
     } catch (error) {
         clearTimeout(timeoutId);
         const duration = Date.now() - startTime;
-        console.error(`[Opencode] Streaming request failed after ${duration}ms:`, error);
+        console.error(`[Opencode] ❌ Streaming request failed after ${duration}ms:`, error);
         throw error;
     }
 }
@@ -327,52 +328,62 @@ export function subscribeToSession(
     callbacks: SSEEventCallbacks
 ): EventSource {
     const url = `${OPENCODE_SERVER_URL}/global/event`;
-    console.log('[Opencode] Subscribing to SSE:', url);
 
     const eventSource = new EventSource(url);
 
     eventSource.onopen = () => {
-        console.log('[Opencode] SSE Connected');
+        // 连接成功，静默
     };
 
     eventSource.onmessage = (event) => {
         try {
-            // Note: opencode server might wrap data in double JSON stringify
-            let payload = JSON.parse(event.data);
-            if (typeof payload === 'string') {
-                payload = JSON.parse(payload);
-            }
-            // Or if it's the standard format: { type: "...", properties: { ... } }
-            // In server.ts: stream.writeSSE({ data: JSON.stringify(event) })
-            // event is { type: "...", properties: { ... } }
-
-            // Handle connection event
-            if (payload.type === 'server.connected') {
-                console.log('[Opencode] Server connected event received');
+            // 解析事件数据
+            let payload = event.data;
+            try {
+                payload = JSON.parse(event.data);
+            } catch {
                 return;
             }
 
-            // Handle heartbeat
-            if (payload.type === 'server.heartbeat') {
+            // 打开事件包装，提取真正的 payload
+            let realPayload = payload;
+            if (payload && typeof payload === 'object') {
+                if (payload.payload !== undefined) {
+                    realPayload = payload.payload;
+                }
+            } else if (typeof payload === 'string') {
+                try {
+                    realPayload = JSON.parse(payload);
+                    if (realPayload.payload !== undefined) {
+                        realPayload = realPayload.payload;
+                    }
+                } catch {
+                    return;
+                }
+            }
+
+            // Handle connection event - 静默
+            if (realPayload.type === 'server.connected') {
                 return;
             }
 
-            // Filter events for this session
-            const props = payload.properties || {};
-            // Check sessionID in various places inside properties
-            const eventSessionId = props.sessionID || props.info?.sessionID || props.part?.sessionID;
+            // Handle heartbeat - 静默忽略
+            if (realPayload.type === 'server.heartbeat') {
+                return;
+            }
 
+            const props = realPayload.properties || {};
+
+            // Check sessionID
+            const eventSessionId = props.part?.sessionID || props.sessionID;
+
+            // 过滤其他 session 的事件
             if (eventSessionId && eventSessionId !== sessionId) {
-                return; // Ignore events from other sessions
-            }
-
-            // Log filtered events for debugging
-            if (eventSessionId) {
-                console.log('[Opencode] SSE Event:', payload.type, props);
+                return;
             }
 
             // Handle message part updates (Scanning for parts)
-            if (payload.type === 'message.part.updated') {
+            if (realPayload.type === 'message.part.updated') {
                 const part = props.part;
                 if (!part) return;
 

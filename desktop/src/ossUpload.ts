@@ -189,8 +189,8 @@ export async function downloadFromOSS(objectKey: string): Promise<string> {
 export async function uploadTextToOSS(content: string, objectKey: string): Promise<string> {
     const client = await getOSSClient();
     try {
-        // 使用 Buffer.from 确保正确编码
-        const result = await client.put(objectKey, Buffer.from(content));
+        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        const result = await client.put(objectKey, blob);
         return result.url;
     } catch (error: any) {
         console.error('[OSS] Text upload failed:', error);
