@@ -10,6 +10,7 @@ use infra::doctor::{check_system_health, install_tool_in_terminal};
 use infra::opencode::{
     get_opencode_status as get_status_impl, spawn_opencode_task as spawn_task_impl, update_opencode_config,
     get_opencode_config, OpenCodeStatus, OpenCodeTaskRequest, OpenCodeTaskResult, OpenCodeConfig,
+    get_coding_master_config, CodingMasterConfig,
 };
 use infra::ralph::{
     get_ralph_progress, is_ralph_active, open_terminal_at, sync_ralph_plan, RalphProgress,
@@ -19,6 +20,7 @@ use infra::parser::{extract_tasks_from_prd, supplement_plan_from_prd, supplement
 
 use infra::planner::{generate_dev_plan, generate_test_plan, read_skill_content, save_plan_file, read_plan_file, check_plan_files, PlanFilesStatus};
 use infra::task_manager::{start_analysis_task, get_task_status, get_task_by_id, cancel_task, AnalysisTask, TaskStatus};
+use infra::llm::{init_llm_service, llm_chat, llm_chat_with_system, get_llm_config_file, save_llm_config_file, LLMMessage, LLMResponse};
 use tauri::Emitter;
 
 #[tauri::command]
@@ -59,6 +61,67 @@ async fn execute_command(command: String, working_dir: String) -> Result<String,
 
     if result.is_empty() {
         result = "命令执行完成（无输出）".to_string();
+    }
+
+    Ok(result)
+}
+
+/// Execute sandbox command with isolated environment
+#[tauri::command]
+async fn execute_sandbox_command(
+    sandbox_id: String,
+    command: String,
+    working_dir: String,
+    session_id: String,
+) -> Result<serde_json::Value, String> {
+    use tokio::process::Command as AsyncCommand;
+
+    info!("Sandbox [{}] executing: {} in {}", sandbox_id, command, working_dir);
+
+    let sandbox_dir = format!("/tmp/sandbox/{}", sandbox_id);
+
+    let _ = std::fs::create_dir_all(&sandbox_dir);
+
+    let full_command = format!(
+        r#"export SANDBOX_ID="{}" && export SANDBOX_SESSION="{}" && export SANDBOX_ROOT="{}" && export PATH="/usr/local/bin:/usr/bin:/bin:$PATH" && cd "{}" && {}"#,
+        sandbox_id, session_id, sandbox_dir, working_dir, command
+    );
+
+    let output = AsyncCommand::new("bash")
+        .arg("-c")
+        .arg(&full_command)
+        .current_dir(&working_dir)
+        .env("SANDBOX_ID", &sandbox_id)
+        .env("SANDBOX_SESSION", &session_id)
+        .env("SANDBOX_ROOT", &sandbox_dir)
+        .env_remove("PYTHONPATH")
+        .env_remove("NODE_PATH")
+        .output()
+        .await
+        .map_err(|e| format!("执行命令失败: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let exit_code = output.status.code().unwrap_or(-1);
+
+    let mut result = serde_json::json!({
+        "success": exit_code == 0,
+        "exitCode": exit_code,
+        "sandboxId": sandbox_id,
+        "sessionId": session_id,
+        "workingDir": working_dir
+    });
+
+    if !stdout.is_empty() {
+        result["output"] = serde_json::Value::String(stdout.clone());
+    }
+
+    if !stderr.is_empty() {
+        result["error"] = serde_json::Value::String(stderr.clone());
+    }
+
+    if stdout.is_empty() && stderr.is_empty() {
+        result["output"] = serde_json::Value::String("命令执行完成（无输出）".to_string());
     }
 
     Ok(result)
@@ -220,6 +283,113 @@ async fn get_opencode_status() -> OpenCodeStatus {
     get_status_impl().await
 }
 
+/// Read file content
+#[tauri::command]
+async fn read_file_content(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read file {}: {}", path, e))
+}
+
+/// Generate opencode config from coding master config
+#[tauri::command]
+async fn generate_opencode_config() -> Result<String, String> {
+    // Read coding master config
+    let home = std::env::var("HOME").map_err(|_| "Could not find HOME directory".to_string())?;
+    let config_path = std::path::PathBuf::from(&home).join(".opencode").join("config.json");
+    
+    println!("[generate_opencode_config] Reading config from: {}", config_path.display());
+    
+    let (api_key, model, small_model) = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read config: {}", e))?;
+        
+        println!("[generate_opencode_config] Config content length: {}", content.len());
+        
+        let config: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse config: {}", e))?;
+        
+        // Debug: print the config structure
+        println!("[generate_opencode_config] Full config: {}", content);
+
+        // Extract Anthropic API key
+        let api_key = if let Some(providers) = config.get("provider").and_then(|p| p.as_object()) {
+            println!("[generate_opencode_config] Providers: {:?}", providers.keys().collect::<Vec<_>>());
+            if let Some(anthropic) = providers.get("anthropic") {
+                println!("[generate_opencode_config] Anthropic config: {}", anthropic);
+                if let Some(key) = anthropic.as_object()
+                    .and_then(|o| o.get("api_key"))
+                    .and_then(|k| k.as_str())
+                {
+                    key.to_string()
+                } else {
+                    "YOUR_ANTHROPIC_API_KEY_HERE".to_string()
+                }
+            } else {
+                "YOUR_ANTHROPIC_API_KEY_HERE".to_string()
+            }
+        } else {
+            "YOUR_ANTHROPIC_API_KEY_HERE".to_string()
+        };
+
+        // Extract model from config
+        let model = config.get("model")
+            .and_then(|m| m.as_str())
+            .unwrap_or("anthropic/claude-3-5-sonnet-20241022")
+            .to_string();
+        
+        let small_model = config.get("small_model")
+            .and_then(|m| m.as_str())
+            .unwrap_or("anthropic/claude-3-haiku-20240307")
+            .to_string();
+
+        println!("[generate_opencode_config] Extracted - api_key: {}, model: {}, small_model: {}", 
+            api_key.chars().take(10).collect::<String>(), model, small_model);
+
+        (api_key, model, small_model)
+    } else {
+        println!("[generate_opencode_config] Config file does not exist!");
+        (
+            "YOUR_ANTHROPIC_API_KEY_HERE".to_string(),
+            "anthropic/claude-3-5-sonnet-20241022".to_string(),
+            "anthropic/claude-3-haiku-20240307".to_string()
+        )
+    };
+
+    // Generate opencode config
+    let opencode_config = serde_json::json!({
+        "$schema": "https://opencode.ai/config.json",
+        "provider": {
+            "anthropic": {
+                "apiKey": api_key
+            },
+            "openai": {}
+        },
+        "model": model,
+        "small_model": small_model
+    });
+
+    // Save to opencode config path
+    let opencode_config_path = std::path::PathBuf::from(&home)
+        .join(".config")
+        .join("opencode")
+        .join("config.json");
+    
+    // Create directory if not exists
+    if let Some(parent) = opencode_config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
+
+    let config_content = serde_json::to_string_pretty(&opencode_config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+    std::fs::write(&opencode_config_path, &config_content)
+        .map_err(|e| format!("Failed to write config: {}", e))?;
+
+    Ok(format!("Generated opencode config at: {}\n\nModel: {}\nSmall Model: {}\n\nConfig:\n{}",
+        opencode_config_path.display(), model, small_model, config_content))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
@@ -236,6 +406,8 @@ pub fn run() {
             get_opencode_status,
             update_opencode_config,
             get_opencode_config,
+            get_coding_master_config,
+            generate_opencode_config,
             sync_ralph_plan,
             get_ralph_progress,
             open_terminal_at,
@@ -260,7 +432,14 @@ pub fn run() {
             cancel_task,
             execute_command,
             execute_command_stream,
-            execute_opencode_command
+            execute_opencode_command,
+            execute_sandbox_command,
+            init_llm_service,
+            llm_chat,
+            llm_chat_with_system,
+            get_llm_config_file,
+            save_llm_config_file,
+            read_file_content
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -3,14 +3,16 @@ import { apiRequest, clearStoredToken, getStoredToken, setStoredToken } from "./
 import { Command } from "@tauri-apps/plugin-shell";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import ModeSelection from "./components/ModeSelection";
 import MaterialCenter from "./MaterialCenter";
 import AgentStudio from "./pages/AgentStudio";
 import CodingMasterDashboard from "./CodingMasterDashboard";
+import SandboxDashboard from "./SandboxDashboard";
 import CodingProjectWorkspace from "./components/CodingProjectWorkspace";
 import * as opencode from "./opencodeService";
 
-type View = "login" | "register" | "main";
-type DashView = "dashboard" | "projects" | "tasks" | "teams" | "settings" | "materials" | "task_detail" | "agent_studio" | "mission_control" | "project_detail";
+type View = "login" | "register" | "mode_selection" | "main";
+type DashView = "dashboard" | "projects" | "tasks" | "teams" | "settings" | "materials" | "task_detail" | "agent_studio" | "mission_control" | "project_detail" | "sandbox";
 type TaskStatus = "pending" | "running" | "completed" | "failed" | "ai_rewriting";
 
 interface User {
@@ -289,6 +291,22 @@ function App() {
     function toggleTheme() {
         setTheme(prev => prev === "dark" ? "light" : "dark");
     }
+
+    const [selectedMode, setSelectedMode] = useState<'coding' | 'ai_assistant' | null>(null);
+
+    const handleModeSelect = (mode: 'coding' | 'ai_assistant') => {
+        console.log('handleModeSelect called with mode:', mode);
+        setSelectedMode(mode);
+        setView('main');
+        if (mode === 'coding') {
+            console.log('Setting dashView to mission_control');
+            setDashView('mission_control');
+        } else {
+            console.log('Setting dashView to agent_studio');
+            setDashView('agent_studio');
+        }
+    };
+
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [user, setUser] = useState<User | null>(null);
@@ -333,6 +351,15 @@ function App() {
     const [projectsList, setProjectsList] = useState<Project[]>([]);
     const [tasksList, setTasksList] = useState<Task[]>([]);
     const [projectTaskStatuses, setProjectTaskStatuses] = useState<Record<string, { status: string; progress: number; message: string }>>({});
+
+    const filteredProjects = projectsList.filter(p => {
+        if (!selectedMode) return true;
+        if (selectedMode === 'coding') {
+            return p.type === 'coding_master';
+        } else {
+            return p.type !== 'coding_master';
+        }
+    });
 
     // Organization State
     const [, setOrganizations] = useState<Organization[]>([]);
@@ -747,7 +774,8 @@ function App() {
                 llmApiKey: data.llmApiKey,
                 llmBaseUrl: data.llmBaseUrl
             });
-            setView("main");
+            setSelectedMode(null);
+            setView("mode_selection");
         } catch (e: any) {
             clearStoredToken();
             setToken("");
@@ -803,7 +831,8 @@ function App() {
                 llmApiKey: data.user.llmApiKey,
                 llmBaseUrl: data.user.llmBaseUrl
             });
-            setView("main");
+            setSelectedMode(null);
+            setView("mode_selection");
         } catch (e: any) {
             setError("登录失败");
         } finally {
@@ -1390,7 +1419,18 @@ function App() {
                 headers: { Authorization: "Bearer " + token },
             });
 
-            // Update OpenCode Config
+            showAlert("保存成功", "您的 AI 模型配置已更新。");
+        } catch (e) {
+            showAlert("保存失败", "无法更新设置。");
+        } finally {
+            setLoading(false);
+        }
+    }
+
+    async function handleSaveCodingConfig(e: React.FormEvent) {
+        e.preventDefault();
+        setLoading(true);
+        try {
             const openCodeConfig = {
                 provider: {
                     [opencodeProvider]: {
@@ -1410,20 +1450,14 @@ function App() {
                 }
             };
 
-            try {
-                await invoke('update_opencode_config', {
-                    configJson: JSON.stringify(openCodeConfig)
-                });
-            } catch (err: any) {
-                console.error("Failed to update OpenCode config:", err);
-            }
+            await invoke('update_opencode_config', {
+                configJson: JSON.stringify(openCodeConfig)
+            });
 
-            // Refresh user data from server to sync the hidden fields too
-            await loadMe(token);
-
-            showAlert("保存成功", "您的 AI 模型配置已更新。");
-        } catch (e) {
-            showAlert("保存失败", "无法更新设置。");
+            showAlert("保存成功", "Coding全能大师配置已更新。");
+        } catch (err: any) {
+            console.error("Failed to update Coding config:", err);
+            showAlert("保存失败", "无法更新 Coding 配置。");
         } finally {
             setLoading(false);
         }
@@ -2049,7 +2083,8 @@ function App() {
                     <li><button onClick={() => { setDashView('tasks'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'tasks' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">history</span><span className="text-sm font-medium">任务历史</span></button></li>
                     <li><button onClick={() => { setDashView('materials'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'materials' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">topic</span><span className="text-sm font-medium">素材中心</span></button></li>
                     <li><button onClick={() => { setDashView('mission_control'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'mission_control' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">rocket_launch</span><span className="text-sm font-medium">Mission Control</span></button></li>
-                    <li><button onClick={() => { setDashView('teams'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'teams' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">apartment</span><span className="text-sm font-medium">我的组织</span></button></li>
+                    <li><button onClick={() => { setDashView('sandbox'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'sandbox' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">terminal</span><span className="text-sm font-medium">沙盒终端</span></button></li>
+                    <li><button onClick={() => { setDashView('teams'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors text-left ${dashView === 'teams' ? 'bg-gradient-primary text-white shadow-lg' : 'text-slate-500 hover:bg-slate-800/50'}`}><span className="material-symbols-outlined">apartment</span><span className="text-sm font-medium">我的组织</span></button></li>
                     <li><button onClick={() => { setDashView('settings'); setIsMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 transition-colors group text-left ${dashView === 'settings' ? 'bg-gradient-primary shadow-lg shadow-purple-600/20 text-white' : 'text-slate-500 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800/50'}`}><span className={`material-symbols-outlined ${dashView === 'settings' ? 'fill' : 'group-hover:text-accent-blue'}`}>settings</span><span className="text-sm font-medium">设置</span></button></li>
                 </ul>
             </nav>
@@ -2103,6 +2138,10 @@ function App() {
                 </div>
             </div>
         );
+    }
+
+    if (view === "mode_selection" && user) {
+        return <ModeSelection onSelectMode={handleModeSelect} userEmail={user.email} />;
     }
 
     return (
@@ -2166,7 +2205,7 @@ function App() {
                                     </div>
                                     <button onClick={() => setDashView('projects')} className="rounded-xl bg-surface-light p-6 shadow-sm dark:bg-surface-dark border border-slate-200 dark:border-slate-800 transition-all hover:border-accent-blue/30 text-left h-full">
                                         <div className="flex items-center justify-between mb-2"><p className="text-sm font-medium text-slate-500 dark:text-slate-400">已添加项目</p><span className="material-symbols-outlined text-purple-500">task_alt</span></div>
-                                        <p className="text-3xl font-bold">{projectsList.length}</p>
+                                        <p className="text-3xl font-bold">{filteredProjects.length}</p>
                                         {/* <p className="text-sm text-slate-500">当前项目总数</p> */}
                                     </button>
                                 </div>
@@ -2181,7 +2220,7 @@ function App() {
                             <div className="flex flex-col gap-4">
                                 <h3 className="text-xl font-bold flex items-center gap-2"><span className="material-symbols-outlined text-accent-blue">quick_reference</span>最近项目</h3>
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                    {projectsList.slice(0, 6).map(p => {
+                                    {filteredProjects.slice(0, 6).map(p => {
                                         const typeConfig = PROJECT_TYPE_CONFIG[p.type] || PROJECT_TYPE_CONFIG['xhs_publish'];
                                         const taskStatus = p.type === 'coding_master' ? projectTaskStatuses[p.id] : null;
                                         const isRunning = taskStatus?.status === 'running';
@@ -2231,13 +2270,13 @@ function App() {
                                 <h3 className="text-xl font-bold">项目列表</h3>
                                 <button onClick={handleOpenCreateModal} className="bg-gradient-primary text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2"><span className="material-symbols-outlined" style={{ fontSize: "18px" }}>add</span>新建项目</button>
                             </div>
-                            {projectsList.length === 0 ? (
+                            {filteredProjects.length === 0 ? (
                                 <div className="text-center py-20 text-slate-500 bg-surface-light dark:bg-surface-dark rounded-xl border border-dashed border-slate-300 dark:border-slate-700">尚未创建项目</div>
                             ) : (
                                 <div className="flex flex-col gap-8">
                                     {PROJECT_TYPE_ORDER.map(typeKey => {
                                         const typeConfig = PROJECT_TYPE_CONFIG[typeKey];
-                                        const projectsOfType = projectsList.filter(p => p.type === typeKey);
+                                        const projectsOfType = filteredProjects.filter(p => p.type === typeKey);
                                         if (projectsOfType.length === 0) return null;
                                         return (
                                             <div key={typeKey} className="flex flex-col gap-4">
@@ -2546,10 +2585,7 @@ function App() {
                                     <span className="material-symbols-outlined text-orange-500">code</span>
                                     Coding全能大师配置
                                 </h3>
-                                <form onSubmit={(e) => {
-                                    e.preventDefault();
-                                    handleUpdateSettings(e);
-                                }} className="flex flex-col gap-6">
+                                <form onSubmit={handleSaveCodingConfig} className="flex flex-col gap-6">
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                         <div className="md:col-span-2">
                                             <h4 className="text-sm font-semibold text-slate-900 dark:text-white mb-2 flex items-center gap-2">
@@ -2904,6 +2940,9 @@ function App() {
                             project={activeProject}
                             onBack={() => setDashView('projects')}
                         />
+                    )}
+                    {dashView === 'sandbox' && (
+                        <SandboxDashboard onClose={() => setDashView('dashboard')} />
                     )}
                 </div>
             </main>

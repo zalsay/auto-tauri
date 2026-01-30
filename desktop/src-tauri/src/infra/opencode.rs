@@ -237,25 +237,36 @@ pub struct OpenCodeConfig {
 #[tauri::command]
 pub async fn update_opencode_config(config_json: String) -> Result<(), String> {
     use std::path::PathBuf;
+    use tokio::fs;
     
     // Parse validation
     let _: OpenCodeConfig = serde_json::from_str(&config_json)
         .map_err(|e| format!("Invalid JSON config: {}", e))?;
 
     let home = std::env::var("HOME").map_err(|_| "Could not find HOME directory".to_string())?;
-    let config_dir = PathBuf::from(home).join(".opencode");
+    let config_dir = PathBuf::from(&home).join(".opencode");
+    
+    println!("[update_opencode_config] Config path: {}", config_dir.display());
     
     // Ensure dir exists
     if !config_dir.exists() {
-        tokio::fs::create_dir_all(&config_dir).await
+        fs::create_dir_all(&config_dir).await
             .map_err(|e| format!("Failed to create config dir: {}", e))?;
+        println!("[update_opencode_config] Created config directory");
     }
 
     let config_path = config_dir.join("config.json");
     
     // Write config
-    tokio::fs::write(&config_path, config_json).await
+    fs::write(&config_path, &config_json).await
         .map_err(|e| format!("Failed to write config file: {}", e))?;
+    
+    println!("[update_opencode_config] Config saved successfully. Size: {} bytes", config_json.len());
+    
+    // Verify by reading back
+    let verify = fs::read_to_string(&config_path).await
+        .map_err(|e| format!("Failed to verify config: {}", e))?;
+    println!("[update_opencode_config] Verified config: {} bytes", verify.len());
 
     Ok(())
 }
@@ -285,6 +296,111 @@ pub async fn get_opencode_config() -> Result<OpenCodeConfig, String> {
         .map_err(|e| format!("Invalid JSON config: {}", e))?;
 
     Ok(config)
+}
+
+/// Coding Master Configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodingMasterConfig {
+    pub provider: String,
+    pub api_key: String,
+    pub model: String,
+    pub small_model: String,
+    pub expert_provider: String,
+    pub expert_api_key: String,
+    pub expert_model: String,
+}
+
+/// Get Coding Master configuration for Agent use
+#[tauri::command]
+pub async fn get_coding_master_config() -> Result<CodingMasterConfig, String> {
+    use std::path::PathBuf;
+    use tokio::fs;
+
+    let home = std::env::var("HOME").map_err(|_| "Could not find HOME directory".to_string())?;
+    let config_path = PathBuf::from(&home).join(".opencode").join("config.json");
+
+    println!("[get_coding_master_config] Reading from: {}", config_path.display());
+
+    if !config_path.exists() {
+        println!("[get_coding_master_config] Config file does not exist, returning defaults");
+        // Return default config if no config file exists
+        return Ok(CodingMasterConfig {
+            provider: "anthropic".to_string(),
+            api_key: "".to_string(),
+            model: "anthropic/claude-3-5-sonnet-20241022".to_string(),
+            small_model: "anthropic/claude-3-haiku-20240307".to_string(),
+            expert_provider: "anthropic".to_string(),
+            expert_api_key: "".to_string(),
+            expert_model: "anthropic/claude-sonnet-4-20250514".to_string(),
+        });
+    }
+
+    let content = fs::read_to_string(&config_path)
+        .await
+        .map_err(|e| format!("Failed to read config: {}", e))?;
+
+    println!("[get_coding_master_config] Read {} bytes", content.len());
+
+    let config: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Invalid config: {}", e))?;
+
+    // Extract provider section
+    let provider = config["provider"].clone();
+
+    // Extract main model settings
+    let main_model = config["model"].as_str().unwrap_or("anthropic/claude-3-5-sonnet-20241022");
+    let small_model = config["small_model"].as_str().unwrap_or("anthropic/claude-3-haiku-20240307");
+
+    // Extract expert model settings
+    let expert_model_config = config.get("expert_model").and_then(|e| e.as_object());
+    let expert_provider = expert_model_config
+        .and_then(|e| e.get("provider"))
+        .and_then(|p| p.as_str())
+        .unwrap_or("anthropic");
+    let expert_model = expert_model_config
+        .and_then(|e| e.get("model"))
+        .and_then(|m| m.as_str())
+        .unwrap_or("anthropic/claude-sonnet-4-20250514");
+
+    // Extract API keys based on provider type
+    let get_api_key = |provider_name: &str| -> String {
+        if let Some(p) = provider.as_object() {
+            if let Some(provider_config) = p.get(provider_name) {
+                return provider_config
+                    .as_object()
+                    .and_then(|c| c.get("api_key"))
+                    .and_then(|k| k.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+            }
+        }
+        if let Some(arr) = provider.as_array() {
+            for item in arr {
+                if let Some(obj) = item.as_object() {
+                    if let Some(name) = obj.get("name").and_then(|n| n.as_str()) {
+                        if name == provider_name {
+                            return obj
+                                .get("api_key")
+                                .and_then(|k| k.as_str())
+                                .map(|s| s.to_string())
+                                .unwrap_or_default();
+                        }
+                    }
+                }
+            }
+        }
+        "".to_string()
+    };
+
+    Ok(CodingMasterConfig {
+        provider: "anthropic".to_string(),
+        api_key: get_api_key("anthropic"),
+        model: main_model.to_string(),
+        small_model: small_model.to_string(),
+        expert_provider: expert_provider.to_string(),
+        expert_api_key: get_api_key(expert_provider),
+        expert_model: expert_model.to_string(),
+    })
 }
 
 #[cfg(test)]
